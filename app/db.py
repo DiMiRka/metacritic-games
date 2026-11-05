@@ -1,6 +1,11 @@
 from collections.abc import AsyncIterator
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.config import settings
 
@@ -11,3 +16,11 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 async def get_session() -> AsyncIterator[AsyncSession]:
     async with SessionLocal() as session:
         yield session
+
+
+def get_engine() -> AsyncEngine:
+    return engine
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    return SessionLocal

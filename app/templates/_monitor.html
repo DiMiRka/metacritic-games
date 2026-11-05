@@ -1,0 +1,89 @@
+{% set c = m.counters %}
+<section class="stats">
+  <div class="stat"><span class="stat__value">{{ c.games_total }}</span><span class="stat__label">игр в базе</span></div>
+  <div class="stat"><span class="stat__value">{{ c.processed_today }}</span><span class="stat__label">обработано сегодня</span></div>
+  <div class="stat"><span class="stat__value">{{ c.runs_today }}</span><span class="stat__label">проходов сегодня</span></div>
+  <div class="stat{% if c.errors_today %} stat--bad{% endif %}"><span class="stat__value">{{ c.errors_today }}</span><span class="stat__label">ошибок сегодня</span></div>
+  <div class="stat"><span class="stat__value">{{ c.summaries_total }}</span><span class="stat__label">резюме отзывов</span></div>
+  <div class="stat"><span class="stat__value">{{ c.embeddings_total }}</span><span class="stat__label">эмбеддингов</span></div>
+</section>
+
+<div class="monitor-grid">
+  <section class="panel">
+    <h2>Воркеры</h2>
+    {% for w in m.workers %}
+      <div class="worker">
+        <span class="dot dot--{{ 'busy' if w.alive and w.status == 'running' else 'ok' if w.alive else 'off' }}"></span>
+        <div>
+          <strong>{{ w.worker }}</strong> —
+          {% if not w.alive %}не отвечает{% elif w.status == "running" %}работает{% else %}ждёт{% endif %}
+          <div class="muted small">
+            {% if w.alive and w.current_task %}{{ w.current_task }} · {% endif %}сигнал {{ w.updated_at | local_time }}
+          </div>
+        </div>
+      </div>
+    {% else %}
+      <p class="muted">Воркер ещё ни разу не запускался</p>
+    {% endfor %}
+  </section>
+
+  <section class="panel">
+    <h2>Текущий проход</h2>
+    {% if m.current_run %}
+      {% set r = m.current_run %}
+      <div data-running>
+        <p><strong>#{{ r.id }}</strong> ({{ "вручную" if r.trigger == "manual" else "по расписанию" }}), идёт {{ r.duration_seconds | duration }}</p>
+        <p class="muted small">обработано {{ r.processed }}: новых {{ r.created }}, обновлено {{ r.updated }}, ошибок {{ r.errors_count }}</p>
+      </div>
+    {% else %}
+      <p class="muted">Сейчас проход не идёт</p>
+    {% endif %}
+    <p class="muted small">
+      Курсор на сегодня:
+      {% if c.phase == "browse" %}browse, страница {{ c.next_page }}{% elif c.phase %}New Releases{% else %}ещё не создан{% endif %}
+    </p>
+  </section>
+</div>
+
+<section class="panel">
+  <h2>Последние проходы</h2>
+  {% if m.runs %}
+  <div class="table-scroll">
+    <table class="runs">
+      <thead>
+        <tr><th>#</th><th>Старт</th><th>Запуск</th><th>Статус</th><th>Длительность</th><th>Игр</th><th>Новых</th><th>Обновлено</th><th>Ошибок</th></tr>
+      </thead>
+      <tbody>
+        {% for r in m.runs %}
+          <tr>
+            <td>{{ r.id }}</td>
+            <td>{{ r.started_at | local_time }}</td>
+            <td>{{ "вручную" if r.trigger == "manual" else "расписание" }}</td>
+            <td><span class="badge badge--{{ r.status }}">{{ {"running": "идёт", "success": "готово", "failed": "сбой"}[r.status] }}</span></td>
+            <td>{{ r.duration_seconds | duration }}</td>
+            <td>{{ r.processed }}</td>
+            <td>{{ r.created }}</td>
+            <td>{{ r.updated }}</td>
+            <td>{{ r.errors_count or "" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p class="muted">Проходов ещё не было</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Последние ошибки</h2>
+  {% for e in m.errors %}
+    <div class="error-row">
+      <span class="muted small">#{{ e.run_id }} · {{ e.started_at | local_time }}</span>
+      {% if e.slug %}<a href="https://www.metacritic.com/game/{{ e.slug }}/" target="_blank" rel="noopener">{{ e.slug }}</a>{% else %}<strong>весь проход</strong>{% endif %}
+      <code>{{ e.error }}</code>
+    </div>
+  {% else %}
+    <p class="muted">Ошибок нет</p>
+  {% endfor %}
+</section>

@@ -1,4 +1,6 @@
 {$DOMAIN} {
-	encode gzip
+	# Сжатие буферизует ответ, а SSE мониторинга должен уходить сразу
+	@compressible not path /monitor/stream
+	encode @compressible gzip
 	reverse_proxy web:8000
 }
