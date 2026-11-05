@@ -4,7 +4,7 @@ from datetime import date, datetime, time
 
 from sqlalchemy import func, literal, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.crawler.cursor import Cursor, collect_batch
@@ -12,7 +12,7 @@ from app.crawler.heartbeat import beat
 from app.crawler.processor import process_game
 from app.embeddings import Embedder
 from app.llm import Summarizer
-from app.models import CrawlPhase, CrawlState, Game, Run, RunStatus
+from app.models import CrawlPhase, CrawlState, Game, Run, RunStatus, User
 from app.scraper.client import MetacriticClient
 from app.scraper.parsers import parse_listing
 
@@ -20,6 +20,20 @@ log = logging.getLogger(__name__)
 
 CRAWL_LOCK_KEY = 815_001
 WORKER_NAME = "crawler"
+# После стольких ошибок за сутки игра больше не берётся в обход до следующего дня
+MAX_FAILURES_PER_DAY = 2
+
+# Advisory lock с ключом bigint лежит в pg_locks как старшие и младшие 32 бита
+_LOCK_HELD = text(
+    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+    "AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+    "AND classid = :hi AND objid = :lo AND objsubid = 1 AND granted)"
+).bindparams(hi=CRAWL_LOCK_KEY >> 32, lo=CRAWL_LOCK_KEY & 0xFFFFFFFF)
+
+
+async def crawl_lock_held(conn: AsyncSession | AsyncConnection) -> bool:
+    """Идёт ли проход прямо сейчас, без попытки захватить блокировку"""
+    return bool(await conn.scalar(_LOCK_HELD))
 
 
 def day_bounds(now: datetime) -> tuple[date, datetime]:
@@ -28,12 +42,13 @@ def day_bounds(now: datetime) -> tuple[date, datetime]:
 
 
 async def done_today(session: AsyncSession, slugs: list[str], day_start: datetime) -> set[str]:
-    """Слаги, уже обработанные сегодня или упавшие с ошибкой в сегодняшних проходах"""
+    """Слаги, уже обработанные сегодня или упавшие сегодня MAX_FAILURES_PER_DAY раз"""
     processed = select(Game.slug).where(Game.slug.in_(slugs), Game.last_processed_at >= day_start)
     failed = text(
         "SELECT e->>'slug' FROM runs, jsonb_array_elements(errors) e "
-        "WHERE started_at >= :day_start AND e->>'slug' = ANY(:slugs)"
-    ).bindparams(day_start=day_start, slugs=slugs)
+        "WHERE started_at >= :day_start AND e->>'slug' = ANY(:slugs) "
+        "GROUP BY 1 HAVING count(*) >= :max_failures"
+    ).bindparams(day_start=day_start, slugs=slugs, max_failures=MAX_FAILURES_PER_DAY)
     rows = (await session.execute(processed)).scalars().all()
     rows += (await session.execute(failed)).scalars().all()
     return set(rows)
@@ -124,6 +139,7 @@ async def run_crawl(
     now: datetime | None = None,
     summarizer: Summarizer | None = None,
     embedder: Embedder | None = None,
+    requested_by: int | None = None,
 ) -> int | None:
     """Один проход обхода. Возвращает id прохода или None, если проход уже идёт."""
     async with engine.connect() as lock_conn:
@@ -134,7 +150,13 @@ async def run_crawl(
             return None
         try:
             async with session_factory() as session, session.begin():
-                run = Run(trigger=trigger, status=RunStatus.RUNNING)
+                # id пришёл через NOTIFY: несуществующий пользователь превращается в NULL
+                requester = (
+                    select(User.id).where(User.id == requested_by).scalar_subquery()
+                    if requested_by is not None
+                    else None
+                )
+                run = Run(trigger=trigger, status=RunStatus.RUNNING, requested_by=requester)
                 session.add(run)
                 await session.flush()
                 run_id = run.id

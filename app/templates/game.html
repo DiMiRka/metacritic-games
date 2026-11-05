@@ -42,14 +42,17 @@
   </section>
   {% endif %}
 
-  {% if game.video_url %}
+  {% set video = game.video_url | safe_url("video") %}
+  {% if video %}
   <section>
     <h2>Видео</h2>
-    {% if game.video_url.endswith(".html") %}
-      <div class="video"><iframe src="{{ game.video_url }}" title="Видео {{ game.title }}"
-           allowfullscreen loading="lazy"></iframe></div>
+    {% if video.endswith(".html") %}
+      <div class="video"><iframe src="{{ video }}" title="Видео {{ game.title }}"
+           sandbox="allow-scripts allow-same-origin allow-presentation"
+           referrerpolicy="strict-origin-when-cross-origin"
+           allow="fullscreen" loading="lazy"></iframe></div>
     {% else %}
-      <a href="{{ game.video_url }}" target="_blank" rel="noopener">Смотреть видео ↗</a>
+      <a href="{{ video }}" target="_blank" rel="noopener noreferrer">Смотреть видео ↗</a>
     {% endif %}
   </section>
   {% endif %}
@@ -80,7 +83,10 @@
   <section>
     <h2>Мнение летсплейщика</h2>
     <p class="description">{{ game.letsplay.conclusion }}</p>
-    <a href="{{ game.letsplay.video_url }}" target="_blank" rel="noopener">{{ game.letsplay.title or "Ролик на YouTube" }} ↗</a>
+    {% set letsplay_url = game.letsplay.video_url | safe_url("youtube") %}
+    {% if letsplay_url %}
+      <a href="{{ letsplay_url }}" target="_blank" rel="noopener noreferrer">{{ game.letsplay.title or "Ролик на YouTube" }} ↗</a>
+    {% endif %}
   </section>
   {% endif %}
 

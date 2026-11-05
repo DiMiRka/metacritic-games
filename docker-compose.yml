@@ -1,10 +1,19 @@
 x-app: &app
   build: .
   env_file: .env
-  environment:
-    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-    CRAWL_ON_START: ${CRAWL_ON_START:-true}
   restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+# Web и worker ходят в базу своими ролями, пароли владельца и чужих ролей им не нужны
+x-no-db-secrets: &no-db-secrets
+  POSTGRES_PASSWORD: ""
+  APP_WEB_DB_PASSWORD: ""
+  APP_WORKER_DB_PASSWORD: ""
 
 services:
   db:
@@ -15,8 +24,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5432:5432"
+    networks: [backend]
+    mem_limit: 1g
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -24,16 +33,28 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # Владелец схемы нужен только здесь: миграции и настройка ролей app_web и app_worker
   migrate:
     <<: *app
-    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    command: ["sh", "-c", "alembic upgrade head && python -m app.db_roles"]
     restart: "no"
+    networks: [backend]
+    mem_limit: 512m
+    cpus: 0.5
     depends_on:
       db:
         condition: service_healthy
 
   web:
     <<: *app
+    environment:
+      <<: *no-db-secrets
+      DATABASE_URL: postgresql+asyncpg://app_web:${APP_WEB_DB_PASSWORD:?задайте APP_WEB_DB_PASSWORD в .env}@db:5432/${POSTGRES_DB}
+    networks: [backend, frontend]
+    mem_limit: 512m
+    cpus: 1.0
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -41,8 +62,18 @@ services:
   worker:
     <<: *app
     command: ["python", "-m", "app.worker"]
+    environment:
+      <<: *no-db-secrets
+      DATABASE_URL: postgresql+asyncpg://app_worker:${APP_WORKER_DB_PASSWORD:?задайте APP_WORKER_DB_PASSWORD в .env}@db:5432/${POSTGRES_DB}
+      CRAWL_ON_START: ${CRAWL_ON_START:-true}
+      HF_HOME: /srv/data/models/hf
     volumes:
       - models:/srv/data/models
+    # Воркеру нужен интернет: Metacritic, LLM, YouTube
+    networks: [backend, egress]
+    # Запас под расшифровку речи faster-whisper
+    mem_limit: 3g
+    cpus: 1.5
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -51,6 +82,7 @@ services:
     image: caddy:2
     environment:
       DOMAIN: ${DOMAIN:-localhost}
+      ENV: ${ENV:-dev}
     ports:
       - "80:80"
       - "443:443"
@@ -58,9 +90,23 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    # frontend закрыт от интернета, а egress нужен для портов и выпуска сертификата
+    networks: [frontend, egress]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    mem_limit: 256m
     depends_on:
       - web
     restart: unless-stopped
+
+networks:
+  # db, web и worker; без выхода наружу
+  backend:
+    internal: true
+  # только web и caddy: до web можно достучаться лишь через Caddy
+  frontend:
+    internal: true
+  egress: {}
 
 volumes:
   pgdata:

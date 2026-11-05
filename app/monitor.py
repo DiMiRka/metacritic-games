@@ -5,12 +5,14 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.crawler.runner import day_bounds
-from app.models import CrawlState, Game, ReviewSummary, Run, RunStatus, WorkerHeartbeat
+from app.crawler.runner import crawl_lock_held, day_bounds
+from app.models import CrawlState, Game, ReviewSummary, Run, RunStatus, User, WorkerHeartbeat
 
 WORKER_STALE_SECONDS = 45
 RECENT_RUNS = 10
 RECENT_ERRORS = 10
+# Запись осталась в running, а блокировку никто не держит: воркер упал посреди прохода
+STALE = "stale"
 
 
 class WorkerOut(BaseModel):
@@ -32,6 +34,7 @@ class RunOut(BaseModel):
     updated: int
     errors_count: int
     duration_seconds: float | None
+    requested_by: str | None
 
 
 class ErrorOut(BaseModel):
@@ -61,12 +64,15 @@ class MonitorSnapshot(BaseModel):
     counters: Counters
 
 
-def _run_out(run: Run, now: datetime) -> RunOut:
-    end = run.finished_at or (now if run.status == RunStatus.RUNNING else None)
+def _run_out(run: Run, now: datetime, current_id: int | None, logins: dict[int, str]) -> RunOut:
+    status = run.status
+    if status == RunStatus.RUNNING and run.id != current_id:
+        status = STALE
+    end = run.finished_at or (now if status == RunStatus.RUNNING else None)
     return RunOut(
         id=run.id,
         trigger=run.trigger,
-        status=run.status,
+        status=status,
         started_at=run.started_at,
         finished_at=run.finished_at,
         processed=run.processed,
@@ -74,6 +80,7 @@ def _run_out(run: Run, now: datetime) -> RunOut:
         updated=run.updated,
         errors_count=len(run.errors),
         duration_seconds=(end - run.started_at).total_seconds() if end else None,
+        requested_by=logins.get(run.requested_by) if run.requested_by else None,
     )
 
 
@@ -108,7 +115,19 @@ async def snapshot(session: AsyncSession, now: datetime | None = None) -> Monito
     ]
 
     runs = (await session.scalars(select(Run).order_by(Run.id.desc()).limit(RECENT_RUNS))).all()
-    current = next((r for r in runs if r.status == RunStatus.RUNNING), None)
+    latest_running = next((r for r in runs if r.status == RunStatus.RUNNING), None)
+    current = latest_running if await crawl_lock_held(session) else None
+    current_id = current.id if current else None
+    requester_ids = {r.requested_by for r in runs if r.requested_by}
+    logins = (
+        dict(
+            (
+                await session.execute(select(User.id, User.login).where(User.id.in_(requester_ids)))
+            ).all()
+        )
+        if requester_ids
+        else {}
+    )
 
     error_rows = await session.execute(
         text(
@@ -141,8 +160,8 @@ async def snapshot(session: AsyncSession, now: datetime | None = None) -> Monito
     return MonitorSnapshot(
         now=now,
         workers=workers,
-        current_run=_run_out(current, now) if current else None,
-        runs=[_run_out(r, now) for r in runs],
+        current_run=_run_out(current, now, current_id, logins) if current else None,
+        runs=[_run_out(r, now, current_id, logins) for r in runs],
         errors=[
             ErrorOut(run_id=i, started_at=s, slug=slug, error=e) for i, s, slug, e in error_rows
         ],

@@ -2,5 +2,10 @@
 	# Сжатие буферизует ответ, а SSE мониторинга должен уходить сразу
 	@compressible not path /monitor/stream
 	encode @compressible gzip
+
+	# HSTS только в проде на настоящем домене, локальный localhost им не закрепляем
+	@prod expression "{$ENV:dev}" == "prod"
+	header @prod Strict-Transport-Security "max-age=31536000"
+
 	reverse_proxy web:8000
 }

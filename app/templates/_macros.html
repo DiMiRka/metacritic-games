@@ -6,8 +6,9 @@
 {%- endmacro %}
 
 {% macro cover(game, size="") -%}
-  {% if game.cover_url %}
-    <img class="cover {{ size }}" src="{{ game.cover_url }}" alt="" loading="lazy" referrerpolicy="no-referrer">
+  {% set src = game.cover_url | safe_url("image") %}
+  {% if src %}
+    <img class="cover {{ size }}" src="{{ src }}" alt="" loading="lazy" referrerpolicy="no-referrer">
   {% else %}
     <div class="cover cover--empty {{ size }}">{{ game.title[:1] }}</div>
   {% endif %}

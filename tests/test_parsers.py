@@ -1,11 +1,15 @@
 from datetime import date
 
+import pytest
+
 from app.scraper.parsers import (
+    VIDEO_HOSTS,
     Review,
     parse_game,
     parse_listing,
     parse_reviews,
     parse_user_score,
+    safe_url,
 )
 from tests.conftest import load_fixture
 
@@ -97,3 +101,46 @@ def test_user_reviews() -> None:
 def test_reviews_skip_empty_quotes() -> None:
     reviews = parse_reviews([{"quote": "  ", "score": 5}, {"quote": "ok", "score": None}])
     assert reviews == [Review(text="ok", score=None, author=None)]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "javascript:alert(1)",
+        "JavaScript:alert(1)",
+        "data:text/html;base64,PHNjcmlwdD4=",
+        "http://cdn.jwplayer.com/players/x.html",
+        "https://evil.com/players/x.html",
+        "https://cdn.jwplayer.com.evil.com/x.html",
+        "//evil.com/x.html",
+        "https://user:pass@cdn.jwplayer.com/x.html",
+        "https://cdn.jwplayer.com:8443/x.html",
+        r"https://cdn.jwplayer.com\@evil.com/x.html",
+        "https://cdn.jwplayer.com/x.html\njavascript:alert(1)",
+        "",
+        None,
+        42,
+    ],
+)
+def test_safe_url_rejects(value) -> None:
+    assert safe_url(value, VIDEO_HOSTS) is None
+
+
+def test_safe_url_accepts_allowed_https_host() -> None:
+    url = "https://cdn.jwplayer.com/players/OXExoEAD.html"
+    assert safe_url(url, VIDEO_HOSTS) == url
+    assert safe_url("https://CDN.jwplayer.com/x.html", VIDEO_HOSTS) is not None
+
+
+def test_game_with_untrusted_urls_drops_them() -> None:
+    data = load_fixture("composer_elden-ring.json")
+    item = data["components"][0]["data"]["item"]
+    item["video"]["embedUrl"] = "javascript:alert(1)"
+    item["video"]["manifestUrl"] = "https://evil.com/x.m3u8"
+    for image in item["images"]:
+        image["bucketPath"] = "@evil.com/x.jpg"
+
+    game = parse_game(data)
+
+    assert game.video_url is None
+    assert game.cover_url is None

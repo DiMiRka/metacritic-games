@@ -1,0 +1,10 @@
+# Только для локальной разработки: открывает Postgres на 127.0.0.1:5432 для тестов и uvicorn
+# docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks: [backend, devnet]
+
+networks:
+  devnet: {}

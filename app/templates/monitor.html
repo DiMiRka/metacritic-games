@@ -2,58 +2,25 @@
 
 {% block title %}Мониторинг — Игры Metacritic{% endblock %}
 
+{% block scripts %}
+  <script src="{{ url_for('static', path='monitor.js') }}" defer></script>
+{% endblock %}
+
 {% block content %}
 <div class="monitor-head">
   <h1>Мониторинг</h1>
   <div class="monitor-actions">
-    <span id="live" class="live" title="Обновление каждые {{ interval_ms // 1000 }} с">● онлайн</span>
+    <span id="live" class="live">● онлайн</span>
     <button id="run-now" class="button" type="button">Запустить сейчас</button>
   </div>
 </div>
 <p id="run-message" class="run-message" role="status"></p>
 
-<div id="monitor">
+<div id="monitor"
+     data-stream-url="/monitor/stream"
+     data-run-url="/api/runs"
+     data-login-url="/login?next=/monitor"
+     data-interval-ms="{{ interval_ms }}">
   {% include "_monitor.html" %}
 </div>
-
-<script>
-  (() => {
-    const monitor = document.getElementById("monitor");
-    const live = document.getElementById("live");
-    const button = document.getElementById("run-now");
-    const message = document.getElementById("run-message");
-
-    const syncButton = () => {
-      button.disabled = monitor.querySelector("[data-running]") !== null;
-    };
-    syncButton();
-
-    const source = new EventSource("/monitor/stream");
-    source.addEventListener("update", (event) => {
-      monitor.innerHTML = event.data;
-      live.classList.remove("live--off");
-      live.textContent = "● онлайн";
-      syncButton();
-    });
-    source.onerror = () => {
-      live.classList.add("live--off");
-      live.textContent = "● переподключение";
-    };
-
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      message.textContent = "Отправляю запрос…";
-      try {
-        const response = await fetch("/api/runs", { method: "POST" });
-        const body = await response.json().catch(() => ({}));
-        message.textContent = response.ok
-          ? "Запрос принят, воркер начнёт проход в течение пары секунд"
-          : body.detail || `Ошибка ${response.status}`;
-      } catch {
-        message.textContent = "Сервер недоступен";
-      }
-      setTimeout(syncButton, 3000);
-    });
-  })();
-</script>
 {% endblock %}

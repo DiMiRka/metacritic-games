@@ -5,9 +5,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.crawler.processor import process_game
-from app.crawler.runner import CRAWL_LOCK_KEY, day_bounds, done_today, run_crawl
+from app.crawler.runner import (
+    CRAWL_LOCK_KEY,
+    crawl_lock_held,
+    day_bounds,
+    done_today,
+    run_crawl,
+)
 from app.models import CrawlPhase, CrawlState, Game, GamePlatform, Run, RunStatus, WorkerHeartbeat
-from tests.conftest import FakeClient
+from tests.conftest import FakeClient, create_user
 
 GAMES = {"elden-ring": "composer_elden-ring.json", "starshapes": "composer_starshapes.json"}
 
@@ -79,17 +85,54 @@ async def test_run_processes_batch_and_records_errors(db_engine, session_factory
     assert heartbeat.status == "idle"
 
 
-async def test_done_today_includes_processed_and_failed(db_engine, session_factory) -> None:
-    client = FakeClient(new_releases=["elden-ring", "starshapes", "no-such-game"], games=GAMES)
-    await _run(db_engine, session_factory, client)
+async def reset_cursor(session_factory) -> None:
+    async with session_factory() as session, session.begin():
+        today, _ = day_bounds(datetime.now(settings.tz))
+        state = await session.get(CrawlState, today)
+        state.phase, state.next_page = CrawlPhase.NEW_RELEASES, 1
 
+
+async def test_done_today_skips_only_repeated_failures(db_engine, session_factory) -> None:
+    client = FakeClient(new_releases=["elden-ring", "starshapes", "no-such-game"], games=GAMES)
     slugs = ["elden-ring", "starshapes", "no-such-game", "fresh-game"]
     now = datetime.now(settings.tz)
+
+    await _run(db_engine, session_factory, client)
     async with session_factory() as session:
-        today = await done_today(session, slugs, day_bounds(now)[1])
+        after_one = await done_today(session, slugs, day_bounds(now)[1])
+    await reset_cursor(session_factory)
+    await _run(db_engine, session_factory, client)
+    async with session_factory() as session:
+        after_two = await done_today(session, slugs, day_bounds(now)[1])
         tomorrow = await done_today(session, slugs, day_bounds(now + timedelta(days=1))[1])
-    assert today == {"elden-ring", "starshapes", "no-such-game"}
+
+    assert after_one == {"elden-ring", "starshapes"}
+    assert after_two == {"elden-ring", "starshapes", "no-such-game"}
     assert tomorrow == set()
+
+
+async def test_failed_game_retried_once_then_skipped(db_engine, session_factory) -> None:
+    client = FakeClient(new_releases=["no-such-game"], games=GAMES)
+    processed = []
+    for _ in range(3):
+        run_id = await _run(db_engine, session_factory, client)
+        async with session_factory() as session:
+            processed.append((await session.get(Run, run_id)).processed)
+        await reset_cursor(session_factory)
+    assert processed == [1, 1, 0]
+
+
+async def test_lock_check_does_not_take_lock(db_engine: AsyncEngine, session_factory) -> None:
+    async with session_factory() as session:
+        assert await crawl_lock_held(session) is False
+        async with db_engine.connect() as worker:
+            taken = await worker.scalar(
+                text("SELECT pg_try_advisory_lock(:k)"), {"k": CRAWL_LOCK_KEY}
+            )
+            assert taken is True
+            assert await crawl_lock_held(session) is True
+            await worker.scalar(text("SELECT pg_advisory_unlock(:k)"), {"k": CRAWL_LOCK_KEY})
+        assert await crawl_lock_held(session) is False
 
 
 async def test_second_run_same_day_takes_nothing_new(db_engine, session_factory) -> None:
@@ -117,6 +160,30 @@ async def test_new_day_starts_over(db_engine, session_factory) -> None:
         states = (await session.scalars(select(CrawlState).order_by(CrawlState.day))).all()
     assert (run.processed, run.created, run.updated) == (2, 0, 2)
     assert len(states) == 2
+
+
+async def test_run_records_requester(db_engine, session_factory) -> None:
+    admin_id = await create_user(session_factory, "boss")
+    client = FakeClient(new_releases=[])
+    manual = await run_crawl(
+        "manual",
+        client=client,
+        engine=db_engine,
+        session_factory=session_factory,
+        requested_by=admin_id,
+    )
+    unknown = await run_crawl(
+        "manual",
+        client=client,
+        engine=db_engine,
+        session_factory=session_factory,
+        requested_by=999_999,
+    )
+    scheduled = await _run(db_engine, session_factory, client)
+
+    async with session_factory() as session:
+        requesters = {r.id: r.requested_by for r in (await session.scalars(select(Run))).all()}
+    assert requesters == {manual: admin_id, unknown: None, scheduled: None}
 
 
 async def test_skip_when_lock_is_held(db_engine: AsyncEngine, session_factory) -> None:

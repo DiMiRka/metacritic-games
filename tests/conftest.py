@@ -1,11 +1,13 @@
+import contextlib
 import hashlib
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import (
@@ -15,9 +17,17 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from app.auth import create_session, csrf_token_for, hash_password
 from app.config import settings
+from app.db import get_session, get_session_factory
 from app.llm import ReviewDigest
-from app.models import EMBEDDING_DIM, Base, ReviewSource
+from app.main import app
+from app.models import EMBEDDING_DIM, Base, ReviewSource, User
+from app.web.deps import SESSION_COOKIE
+from app.web.ratelimit import LIMITERS
+
+PASSWORD = "correct horse battery staple"
+ORIGIN = "http://test"
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -126,3 +136,54 @@ class FakeEmbedder:
     async def embed(self, text: str) -> list[float]:
         seed = hashlib.sha256(text.encode()).digest()
         return [seed[i % len(seed)] / 255 + 0.01 for i in range(EMBEDDING_DIM)]
+
+
+async def create_user(
+    session_factory, login: str, role: str = "admin", password: str = PASSWORD, active=True
+) -> int:
+    async with session_factory() as db, db.begin():
+        user = User(login=login, password_hash=hash_password(password), role=role, is_active=active)
+        db.add(user)
+        await db.flush()
+        return user.id
+
+
+async def login_as(session_factory, user_id: int) -> str:
+    async with session_factory() as db, db.begin():
+        user = await db.get(User, user_id)
+        return await create_session(db, user, "127.0.0.1", "pytest")
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limits() -> None:
+    for limiter in LIMITERS:
+        limiter.reset()
+
+
+@pytest.fixture
+def make_client(session_factory) -> Callable:
+    """Клиент к приложению: анонимный или с готовой сессией нужной роли"""
+
+    async def override() -> AsyncIterator:
+        async with session_factory() as session:
+            yield session
+
+    @contextlib.asynccontextmanager
+    async def factory(role: str | None = None, ip: str = "127.0.0.1"):
+        app.dependency_overrides[get_session] = override
+        app.dependency_overrides[get_session_factory] = lambda: session_factory
+        headers = {"Origin": ORIGIN}
+        cookies = {}
+        if role:
+            user_id = await create_user(session_factory, f"{role}-{ip}", role)
+            token = await login_as(session_factory, user_id)
+            cookies[SESSION_COOKIE] = token
+            headers["X-CSRF-Token"] = csrf_token_for(token)
+        transport = ASGITransport(app=app, client=(ip, 50000))
+        async with AsyncClient(
+            transport=transport, base_url=ORIGIN, headers=headers, cookies=cookies
+        ) as http:
+            yield http
+        app.dependency_overrides.clear()
+
+    return factory

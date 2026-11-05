@@ -4,8 +4,7 @@ import pytest
 from sqlalchemy import select, update
 
 from app.config import settings
-from app.crawler.processor import process_game
-from app.llm import SummaryError
+from app.crawler.processor import EnrichmentError, process_game
 from app.models import EMBEDDING_DIM, Game, GamePlatform, ReviewSummary
 from app.similar import similar_games
 from tests.conftest import FakeClient, FakeEmbedder, FakeSummarizer
@@ -77,7 +76,7 @@ async def test_no_summary_without_reviews(session_factory) -> None:
 
 
 async def test_llm_failure_keeps_game_and_raises(session_factory) -> None:
-    with pytest.raises(SummaryError):
+    with pytest.raises(EnrichmentError):
         await process(session_factory, "elden-ring", FakeSummarizer(fail=True))
 
     async with session_factory() as session:
@@ -94,6 +93,33 @@ async def test_embedding_saved_and_kept_without_embedder(session_factory) -> Non
         game = await session.scalar(select(Game))
     assert game.embedding is not None
     assert len(game.embedding) == EMBEDDING_DIM
+
+
+class FailingEmbedder:
+    async def embed(self, text: str) -> list[float]:
+        raise RuntimeError("модель не загрузилась")
+
+
+async def test_embedding_failure_saves_game_without_vector(session_factory) -> None:
+    with pytest.raises(EnrichmentError, match="embedding: RuntimeError"):
+        await process(session_factory, "elden-ring", embedder=FailingEmbedder())
+
+    async with session_factory() as session:
+        game = await session.scalar(select(Game))
+    assert game.slug == "elden-ring"
+    assert game.embedding is None
+
+
+async def test_embedding_failure_keeps_old_vector_and_summaries(session_factory) -> None:
+    await process(session_factory, "elden-ring", embedder=FakeEmbedder())
+    summarizer = FakeSummarizer()
+    with pytest.raises(EnrichmentError):
+        await process(session_factory, "elden-ring", summarizer, FailingEmbedder())
+
+    async with session_factory() as session:
+        game = await session.scalar(select(Game))
+    assert game.embedding is not None
+    assert len(summarizer.calls) == 2
 
 
 def unit(*hot: int) -> list[float]:

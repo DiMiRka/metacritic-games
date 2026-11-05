@@ -16,6 +16,8 @@ dependencies = [
     "anthropic>=2.5",
     "openai>=3.40",
     "fastembed>=0.9",
+    "argon2-cffi>=25.1",
+    "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]

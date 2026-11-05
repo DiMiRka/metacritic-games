@@ -4,17 +4,28 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Игры Metacritic{% endblock %}</title>
+  {% if csrf_token %}<meta name="csrf-token" content="{{ csrf_token }}">{% endif %}
+  <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false}'>
   <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
-  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js" defer></script>
+  <script src="{{ url_for('static', path='htmx.min.js') }}" defer></script>
+  {% block scripts %}{% endblock %}
 </head>
-<body>
+<body{% if csrf_token %} hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'{% endif %}>
   <header class="topbar">
     <div class="wrap topbar__inner">
       <a class="logo" href="/">Игры<span>Metacritic</span></a>
       <nav class="topnav">
         <a href="/">Каталог</a>
-        <a href="/monitor">Мониторинг</a>
-        <a href="/docs">API</a>
+        {% if auth and auth.is_admin %}<a href="/monitor">Мониторинг</a>{% endif %}
+        {% if show_docs %}<a href="/docs">API</a>{% endif %}
+        {% if auth %}
+          <form class="logout" method="post" action="/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="link-button" type="submit" title="Выйти">Выйти ({{ auth.login }})</button>
+          </form>
+        {% else %}
+          <a href="/login">Войти</a>
+        {% endif %}
       </nav>
     </div>
   </header>

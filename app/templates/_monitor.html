@@ -32,7 +32,7 @@
     {% if m.current_run %}
       {% set r = m.current_run %}
       <div data-running>
-        <p><strong>#{{ r.id }}</strong> ({{ "вручную" if r.trigger == "manual" else "по расписанию" }}), идёт {{ r.duration_seconds | duration }}</p>
+        <p><strong>#{{ r.id }}</strong> ({% if r.trigger == "manual" %}вручную{% if r.requested_by %}, {{ r.requested_by }}{% endif %}{% else %}по расписанию{% endif %}), идёт {{ r.duration_seconds | duration }}</p>
         <p class="muted small">обработано {{ r.processed }}: новых {{ r.created }}, обновлено {{ r.updated }}, ошибок {{ r.errors_count }}</p>
       </div>
     {% else %}
@@ -58,8 +58,8 @@
           <tr>
             <td>{{ r.id }}</td>
             <td>{{ r.started_at | local_time }}</td>
-            <td>{{ "вручную" if r.trigger == "manual" else "расписание" }}</td>
-            <td><span class="badge badge--{{ r.status }}">{{ {"running": "идёт", "success": "готово", "failed": "сбой"}[r.status] }}</span></td>
+            <td>{% if r.trigger == "manual" %}{{ r.requested_by or "вручную" }}{% else %}расписание{% endif %}</td>
+            <td><span class="badge badge--{{ r.status }}">{{ {"running": "идёт", "success": "готово", "failed": "сбой", "stale": "прерван"}[r.status] }}</span></td>
             <td>{{ r.duration_seconds | duration }}</td>
             <td>{{ r.processed }}</td>
             <td>{{ r.created }}</td>

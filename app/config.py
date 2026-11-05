@@ -7,13 +7,27 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    env: Literal["dev", "prod"] = "dev"
+
     database_url: str = "postgresql+asyncpg://metacritic:metacritic@localhost:5432/metacritic"
+    # Пароли ролей app_web и app_worker, их создаёт python -m app.db_roles
+    app_web_db_password: str = ""
+    app_worker_db_password: str = ""
 
     timezone: str = "Europe/Moscow"
     batch_size: int = 20
     concurrency: int = 3
     crawl_interval_minutes: int = 60
     crawl_on_start: bool = True
+    manual_run_cooldown_minutes: int = 10
+
+    session_ttl_hours: int = 12
+    login_max_attempts: int = 5
+    login_window_minutes: int = 15
+
+    rate_limit_catalog_per_minute: int = 120
+    rate_limit_api_per_minute: int = 120
+    rate_limit_login_per_minute: int = 20
 
     request_delay: float = 1.0
     user_agent: str = (
@@ -30,6 +44,10 @@ class Settings(BaseSettings):
 
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_cache_dir: str = "data/models"
+
+    @property
+    def is_prod(self) -> bool:
+        return self.env == "prod"
 
     @property
     def tz(self) -> ZoneInfo:

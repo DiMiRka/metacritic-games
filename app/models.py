@@ -4,6 +4,7 @@ from enum import StrEnum
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -55,6 +56,11 @@ class RunStatus(StrEnum):
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
+
+
+class UserRole(StrEnum):
+    VIEWER = "viewer"
+    ADMIN = "admin"
 
 
 class LetsplayStatus(StrEnum):
@@ -201,6 +207,8 @@ class Run(Base):
     created: Mapped[int] = mapped_column(Integer, default=0)
     updated: Mapped[int] = mapped_column(Integer, default=0)
     errors: Mapped[list[dict]] = mapped_column(JSONB, default=list, server_default=text("'[]'"))
+    # Кто нажал «Запустить сейчас», у прохода по расписанию NULL
+    requested_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
     __table_args__ = (
         CheckConstraint("trigger IN ('schedule', 'manual')", name="trigger"),
@@ -215,3 +223,54 @@ class WorkerHeartbeat(Base):
     status: Mapped[str] = mapped_column(String(20))
     current_task: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = _updated()
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    login: Mapped[str] = mapped_column(String(100), unique=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+    role: Mapped[str] = mapped_column(String(10), default=UserRole.VIEWER)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = _created()
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (CheckConstraint("role IN ('viewer', 'admin')", name="role"),)
+
+
+class UserSession(Base):
+    """Серверная сессия: в базе только sha256 от токена из cookie"""
+
+    __tablename__ = "sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = _created()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    ip: Mapped[str | None] = mapped_column(String(64))
+    user_agent: Mapped[str | None] = mapped_column(String(300))
+
+    user: Mapped[User] = relationship()
+
+    __table_args__ = (
+        Index("ix_sessions_user_id", "user_id"),
+        Index("ix_sessions_expires_at", "expires_at"),
+    )
+
+
+class LoginAttempt(Base):
+    """Неудачные попытки входа: счётчик в базе общий для всех процессов web"""
+
+    __tablename__ = "login_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ip: Mapped[str] = mapped_column(String(64))
+    login: Mapped[str] = mapped_column(String(100))
+    attempted_at: Mapped[datetime] = _created()
+
+    __table_args__ = (Index("ix_login_attempts_ip_login_at", "ip", "login", "attempted_at"),)

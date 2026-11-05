@@ -7,7 +7,7 @@ from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import settings
-from app.crawl_requests import asyncpg_dsn, listen_for_requests
+from app.crawl_requests import asyncpg_dsn, listen_for_requests, requester_from_payload
 from app.crawler.heartbeat import beat
 from app.crawler.runner import WORKER_NAME, fail_stale_runs, run_crawl
 from app.db import SessionLocal, engine
@@ -41,7 +41,9 @@ async def main() -> None:
 
     async with MetacriticClient() as client:
 
-        async def crawl(trigger: RunTrigger = RunTrigger.SCHEDULE) -> None:
+        async def crawl(
+            trigger: RunTrigger = RunTrigger.SCHEDULE, requested_by: int | None = None
+        ) -> None:
             run_id = await run_crawl(
                 trigger,
                 client=client,
@@ -49,13 +51,15 @@ async def main() -> None:
                 session_factory=SessionLocal,
                 summarizer=summarizer,
                 embedder=embedder,
+                requested_by=requested_by,
             )
             if run_id is not None:
                 await announce_next_run()
 
-        def on_manual_request() -> None:
-            log.info("manual crawl requested")
-            task = asyncio.create_task(crawl(RunTrigger.MANUAL))
+        def on_manual_request(payload: str) -> None:
+            requested_by = requester_from_payload(payload)
+            log.info("manual crawl requested by user %s", requested_by)
+            task = asyncio.create_task(crawl(RunTrigger.MANUAL, requested_by))
             manual_tasks.add(task)
             task.add_done_callback(manual_tasks.discard)
 

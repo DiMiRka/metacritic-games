@@ -45,7 +45,7 @@ h1, h2, h3 { line-height: 1.2; }
 .topbar__inner { display: flex; align-items: center; justify-content: space-between; height: 56px; }
 .logo { font-weight: 700; font-size: 18px; color: var(--text); }
 .logo span { color: var(--accent); margin-left: 6px; }
-.topnav { display: flex; gap: 20px; }
+.topnav { display: flex; gap: 20px; align-items: center; }
 .topnav a { color: var(--muted); }
 
 .filters {
@@ -237,6 +237,7 @@ h1, h2, h3 { line-height: 1.2; }
 .badge--running { background: var(--accent); }
 .badge--success { background: var(--good); }
 .badge--failed { background: var(--bad); }
+.badge--stale { background: var(--mixed); color: #1c1c1e; }
 .error-row { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .error-row code { flex-basis: 100%; font-size: 12px; color: var(--bad); word-break: break-word; }
 
@@ -253,4 +254,33 @@ h1, h2, h3 { line-height: 1.2; }
   .cover--large { width: 200px; }
   .opinions { grid-template-columns: 1fr; gap: 0; }
   .game__info h1 { font-size: 24px; }
+}
+
+.logout { margin: 0; }
+.link-button {
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.link-button:hover { color: var(--text); }
+
+.login { max-width: 360px; margin: 48px auto; }
+.login__form { display: flex; flex-direction: column; gap: 14px; margin-top: 20px; }
+.login__form label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 14px; }
+.login__form input {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 9px 12px;
+}
+.login__error {
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+  border-radius: var(--radius);
+  padding: 8px 12px;
 }

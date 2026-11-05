@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.embeddings import Embedder, embedding_text
-from app.llm import Summarizer, SummaryError
+from app.llm import Summarizer
 from app.models import Game, GamePlatform, ReviewSource
 from app.scraper.client import MetacriticClient
 from app.scraper.parsers import (
@@ -23,6 +23,10 @@ REVIEWS_LIMIT = 30
 
 class GameNotFoundError(Exception):
     pass
+
+
+class EnrichmentError(Exception):
+    """Игра сохранена, но эмбеддинг или резюме не получились"""
 
 
 async def fetch_game(client: MetacriticClient, slug: str) -> GameData:
@@ -123,18 +127,24 @@ async def process_game(
 ) -> bool:
     data = await fetch_game(client, slug)
     reviews = await fetch_reviews(client, data) if summarizer else {}
-    embedding = await embedder.embed(embedding_text(data)) if embedder else None
+
+    # Сбой эмбеддинга или LLM не мешает сохранить игру, ошибка уходит в runs.errors
+    failures = []
+    embedding = None
+    if embedder:
+        try:
+            embedding = await embedder.embed(embedding_text(data))
+        except Exception as exc:
+            failures.append(f"embedding: {type(exc).__name__}: {exc}")
 
     async with session_factory() as session, session.begin():
         game_id, created = await upsert_game(session, data, processed_at, embedding)
 
-    # Игра уже сохранена, сбой LLM по одному источнику не мешает второму
-    failures = []
     for source, items in reviews.items():
         try:
             await update_summary(session_factory, summarizer, game_id, data.title, source, items)
         except Exception as exc:
             failures.append(f"{source}: {type(exc).__name__}: {exc}")
     if failures:
-        raise SummaryError("; ".join(failures))
+        raise EnrichmentError("; ".join(failures))
     return created
