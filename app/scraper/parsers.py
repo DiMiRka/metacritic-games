@@ -27,6 +27,8 @@ class GameData:
     platforms: list[PlatformScore]
     lead_platform: str | None = None
     lead_userscore: float | None = None
+    critic_reviews_total: int = 0
+    user_reviews_total: int = 0
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,8 @@ def parse_game(data: dict[str, Any]) -> GameData | None:
         platforms=platforms,
         lead_platform=_summary_platform(user_summary),
         lead_userscore=parse_user_score(user_summary),
+        critic_reviews_total=(components.get("critic-reviews") or {}).get("totalResults") or 0,
+        user_reviews_total=(components.get("user-reviews") or {}).get("totalResults") or 0,
     )
 
 

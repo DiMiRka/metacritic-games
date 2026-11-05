@@ -40,6 +40,8 @@ services:
   worker:
     <<: *app
     command: ["python", "-m", "app.worker"]
+    volumes:
+      - models:/srv/data/models
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -61,5 +63,6 @@ services:
 
 volumes:
   pgdata:
+  models:
   caddy_data:
   caddy_config:

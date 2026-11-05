@@ -10,6 +10,8 @@ from app.config import settings
 from app.crawler.heartbeat import beat
 from app.crawler.runner import WORKER_NAME, fail_stale_runs, run_crawl
 from app.db import SessionLocal, engine
+from app.embeddings import FastEmbedder
+from app.llm import build_summarizer
 from app.models import RunTrigger
 from app.scraper.client import MetacriticClient
 
@@ -24,11 +26,19 @@ async def main() -> None:
         log.warning("marked %d stale runs as failed", stale)
     await beat(SessionLocal, WORKER_NAME, "idle")
 
+    summarizer = build_summarizer()
+    embedder = FastEmbedder()
+
     async with MetacriticClient() as client:
 
         async def crawl() -> None:
             await run_crawl(
-                RunTrigger.SCHEDULE, client=client, engine=engine, session_factory=SessionLocal
+                RunTrigger.SCHEDULE,
+                client=client,
+                engine=engine,
+                session_factory=SessionLocal,
+                summarizer=summarizer,
+                embedder=embedder,
             )
 
         async def keepalive() -> None:

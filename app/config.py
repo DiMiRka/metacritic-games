@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     summary_model: str = "claude-haiku-5-5"
     youtube_api_key: str = ""
 
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    embedding_cache_dir: str = "data/models"
+
     @property
     def tz(self) -> ZoneInfo:
         return ZoneInfo(self.timezone)

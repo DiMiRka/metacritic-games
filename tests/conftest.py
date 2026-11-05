@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from collections.abc import AsyncIterator
@@ -15,7 +16,8 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import settings
-from app.models import Base
+from app.llm import ReviewDigest
+from app.models import EMBEDDING_DIM, Base, ReviewSource
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -97,3 +99,30 @@ class FakeClient:
     async def user_stats(self, slug: str, platform: str) -> dict[str, Any]:
         self.user_stats_calls.append((slug, platform))
         return load_fixture("user_stats_elden-ring_pc.json")
+
+    async def critic_reviews(self, slug: str, limit: int = 30) -> list[dict[str, Any]]:
+        return load_fixture("critic_reviews_elden-ring.json")["data"]["items"][:limit]
+
+    async def user_reviews(self, slug: str, limit: int = 30) -> list[dict[str, Any]]:
+        return load_fixture("user_reviews_elden-ring.json")["data"]["items"][:limit]
+
+
+class FakeSummarizer:
+    def __init__(self, model: str = "fake-model", fail: bool = False) -> None:
+        self.model = model
+        self.fail = fail
+        self.calls: list[tuple[str, str, int]] = []
+
+    async def summarize(self, title: str, source: ReviewSource, reviews: list) -> ReviewDigest:
+        self.calls.append((title, source, len(reviews)))
+        if self.fail:
+            raise RuntimeError("LLM недоступна")
+        return ReviewDigest(likes=[f"{source} плюс"], dislikes=[f"{source} минус"])
+
+
+class FakeEmbedder:
+    """Детерминированный вектор: одинаковый текст даёт одинаковый эмбеддинг"""
+
+    async def embed(self, text: str) -> list[float]:
+        seed = hashlib.sha256(text.encode()).digest()
+        return [seed[i % len(seed)] / 255 + 0.01 for i in range(EMBEDDING_DIM)]

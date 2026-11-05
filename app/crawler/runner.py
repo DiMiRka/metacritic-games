@@ -10,6 +10,8 @@ from app.config import settings
 from app.crawler.cursor import Cursor, collect_batch
 from app.crawler.heartbeat import beat
 from app.crawler.processor import process_game
+from app.embeddings import Embedder
+from app.llm import Summarizer
 from app.models import CrawlPhase, CrawlState, Game, Run, RunStatus
 from app.scraper.client import MetacriticClient
 from app.scraper.parsers import parse_listing
@@ -61,6 +63,8 @@ async def _execute(
     session_factory: async_sessionmaker[AsyncSession],
     batch_size: int,
     now: datetime,
+    summarizer: Summarizer | None,
+    embedder: Embedder | None,
 ) -> None:
     today, day_start = day_bounds(now)
 
@@ -96,7 +100,9 @@ async def _execute(
         nonlocal finished
         async with semaphore:
             try:
-                created = await process_game(session_factory, client, slug, now)
+                created = await process_game(
+                    session_factory, client, slug, now, summarizer, embedder
+                )
                 await _record(session_factory, run_id, created=created)
             except Exception as exc:
                 log.warning("run %s: %s failed: %r", run_id, slug, exc)
@@ -116,6 +122,8 @@ async def run_crawl(
     session_factory: async_sessionmaker[AsyncSession],
     batch_size: int | None = None,
     now: datetime | None = None,
+    summarizer: Summarizer | None = None,
+    embedder: Embedder | None = None,
 ) -> int | None:
     """Один проход обхода. Возвращает id прохода или None, если проход уже идёт."""
     async with engine.connect() as lock_conn:
@@ -140,6 +148,8 @@ async def run_crawl(
                     session_factory,
                     batch_size or settings.batch_size,
                     now or datetime.now(settings.tz),
+                    summarizer,
+                    embedder,
                 )
             except Exception as exc:
                 log.exception("run %s failed", run_id)

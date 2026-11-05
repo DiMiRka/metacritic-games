@@ -4,9 +4,21 @@ from sqlalchemy import delete, func, literal_column
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Game, GamePlatform
+from app.embeddings import Embedder, embedding_text
+from app.llm import Summarizer, SummaryError
+from app.models import Game, GamePlatform, ReviewSource
 from app.scraper.client import MetacriticClient
-from app.scraper.parsers import GameData, PlatformScore, parse_game, parse_user_score
+from app.scraper.parsers import (
+    GameData,
+    PlatformScore,
+    Review,
+    parse_game,
+    parse_reviews,
+    parse_user_score,
+)
+from app.summaries import update_summary
+
+REVIEWS_LIMIT = 30
 
 
 class GameNotFoundError(Exception):
@@ -30,7 +42,10 @@ async def fetch_game(client: MetacriticClient, slug: str) -> GameData:
 
 
 async def upsert_game(
-    session: AsyncSession, data: GameData, processed_at: datetime
+    session: AsyncSession,
+    data: GameData,
+    processed_at: datetime,
+    embedding: list[float] | None = None,
 ) -> tuple[int, bool]:
     values = {
         "slug": data.slug,
@@ -43,6 +58,8 @@ async def upsert_game(
         "genres": data.genres,
         "last_processed_at": processed_at,
     }
+    if embedding is not None:
+        values["embedding"] = embedding
     stmt = insert(Game).values(**values)
     stmt = stmt.on_conflict_do_update(
         index_elements=[Game.slug],
@@ -81,13 +98,43 @@ async def upsert_game(
     return game_id, bool(inserted)
 
 
+async def fetch_reviews(
+    client: MetacriticClient, data: GameData
+) -> dict[ReviewSource, list[Review]]:
+    reviews = {ReviewSource.CRITIC: [], ReviewSource.USER: []}
+    if data.critic_reviews_total:
+        reviews[ReviewSource.CRITIC] = parse_reviews(
+            await client.critic_reviews(data.slug, REVIEWS_LIMIT)
+        )
+    if data.user_reviews_total:
+        reviews[ReviewSource.USER] = parse_reviews(
+            await client.user_reviews(data.slug, REVIEWS_LIMIT)
+        )
+    return reviews
+
+
 async def process_game(
     session_factory: async_sessionmaker[AsyncSession],
     client: MetacriticClient,
     slug: str,
     processed_at: datetime,
+    summarizer: Summarizer | None = None,
+    embedder: Embedder | None = None,
 ) -> bool:
     data = await fetch_game(client, slug)
+    reviews = await fetch_reviews(client, data) if summarizer else {}
+    embedding = await embedder.embed(embedding_text(data)) if embedder else None
+
     async with session_factory() as session, session.begin():
-        _, created = await upsert_game(session, data, processed_at)
+        game_id, created = await upsert_game(session, data, processed_at, embedding)
+
+    # Игра уже сохранена, сбой LLM по одному источнику не мешает второму
+    failures = []
+    for source, items in reviews.items():
+        try:
+            await update_summary(session_factory, summarizer, game_id, data.title, source, items)
+        except Exception as exc:
+            failures.append(f"{source}: {type(exc).__name__}: {exc}")
+    if failures:
+        raise SummaryError("; ".join(failures))
     return created

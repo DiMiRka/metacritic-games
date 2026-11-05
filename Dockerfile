@@ -15,7 +15,9 @@ RUN mkdir app && touch app/__init__.py \
 
 COPY . .
 
-RUN useradd --create-home appuser
+RUN useradd --create-home appuser \
+    && mkdir -p /srv/data/models \
+    && chown -R appuser /srv/data
 USER appuser
 
 EXPOSE 8000
