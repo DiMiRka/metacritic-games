@@ -99,6 +99,7 @@ async def main() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    for noisy in ("httpx", "httpx2", "apscheduler.executors.default"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(main())
