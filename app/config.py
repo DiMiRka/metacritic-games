@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     timezone: str = "Europe/Moscow"
     batch_size: int = 20
     concurrency: int = 3
+    crawl_interval_minutes: int = 60
+    crawl_on_start: bool = True
 
     request_delay: float = 1.0
     user_agent: str = (

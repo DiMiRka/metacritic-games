@@ -1,0 +1,99 @@
+import json
+import os
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+from sqlalchemy import text
+from sqlalchemy.engine import URL, make_url
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+from app.config import settings
+from app.models import Base
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def load_fixture(name: str) -> dict[str, Any]:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def _test_db_url() -> URL:
+    if explicit := os.environ.get("TEST_DATABASE_URL"):
+        return make_url(explicit)
+    url = make_url(settings.database_url)
+    return url.set(database=f"{url.database}_test")
+
+
+@pytest.fixture(scope="session")
+async def db_engine() -> AsyncIterator[AsyncEngine]:
+    url = _test_db_url()
+    admin = create_async_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    try:
+        async with admin.connect() as conn:
+            exists = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": url.database}
+            )
+            if not exists:
+                await conn.execute(text(f'CREATE DATABASE "{url.database}"'))
+    except Exception as exc:
+        if os.environ.get("REQUIRE_DB"):
+            raise
+        pytest.skip(f"Postgres недоступен: {exc}")
+    finally:
+        await admin.dispose()
+
+    engine = create_async_engine(url)
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+
+@pytest.fixture
+async def session_factory(db_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
+    async with db_engine.begin() as conn:
+        await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+    return async_sessionmaker(db_engine, expire_on_commit=False)
+
+
+class FakeClient:
+    """Подменяет MetacriticClient: отдаёт сохранённые ответы вместо сети."""
+
+    def __init__(
+        self,
+        new_releases: list[str] | None = None,
+        browse: dict[int, list[str]] | None = None,
+        games: dict[str, str] | None = None,
+    ) -> None:
+        self._new_releases = new_releases or []
+        self._browse = browse or {}
+        self._games = games or {}
+        self.user_stats_calls: list[tuple[str, str]] = []
+
+    @staticmethod
+    def _listing(slugs: list[str]) -> dict[str, Any]:
+        return {"data": {"items": [{"slug": s} for s in slugs]}}
+
+    async def new_releases(self) -> dict[str, Any]:
+        return self._listing(self._new_releases)
+
+    async def browse(self, page: int) -> dict[str, Any]:
+        return self._listing(self._browse.get(page, []))
+
+    async def game(self, slug: str) -> dict[str, Any]:
+        return load_fixture(self._games.get(slug, "composer_not-found.json"))
+
+    async def user_stats(self, slug: str, platform: str) -> dict[str, Any]:
+        self.user_stats_calls.append((slug, platform))
+        return load_fixture("user_stats_elden-ring_pc.json")
