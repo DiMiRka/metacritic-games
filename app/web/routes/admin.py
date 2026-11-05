@@ -9,7 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.service import load_session
 from app.crawler.lock import crawl_lock_held
-from app.crawler.requests import request_crawl, seconds_until_manual_run
+from app.crawler.runs import seconds_until_manual_run
+from app.crawler.stages import collect_active, enqueue_collect
+from app.jobs.queue import retry_dead
 from app.monitoring.snapshot import MonitorSnapshot, snapshot, worker_alive
 from app.web.deps import Admin, Session, SessionFactory, require_admin, require_csrf, session_token
 from app.web.templating import templates
@@ -85,7 +87,8 @@ async def api_monitor(session: Session) -> MonitorSnapshot:
 
 @router.post("/api/runs", status_code=202, dependencies=[Depends(require_csrf)])
 async def start_run(session: Session, admin: Admin) -> JSONResponse:
-    if await crawl_lock_held(session):
+    """202 означает, что задача collect записана в очередь и не потеряется"""
+    if await collect_active(session) or await crawl_lock_held(session):
         return JSONResponse({"detail": "Проход уже идёт"}, status_code=409)
     if wait := await seconds_until_manual_run(session):
         minutes = math.ceil(wait / 60)
@@ -96,5 +99,19 @@ async def start_run(session: Session, admin: Admin) -> JSONResponse:
         )
     if not await worker_alive(session):
         return JSONResponse({"detail": "Воркер не отвечает"}, status_code=503)
-    await request_crawl(session, admin.user_id)
-    return JSONResponse({"status": "accepted"}, status_code=202)
+    job_id = await enqueue_collect(session, "manual", admin.user_id)
+    if job_id is None:
+        await session.rollback()
+        return JSONResponse({"detail": "Проход уже идёт"}, status_code=409)
+    await session.commit()
+    return JSONResponse({"status": "accepted", "job_id": job_id}, status_code=202)
+
+
+@router.post("/api/jobs/{job_id}/retry", dependencies=[Depends(require_csrf)])
+async def retry_job(session: Session, job_id: int) -> JSONResponse:
+    """Повтор dead-задачи с чистым счётчиком попыток"""
+    if not await retry_dead(session, job_id):
+        await session.rollback()
+        return JSONResponse({"detail": "Задача не найдена или не в статусе dead"}, status_code=404)
+    await session.commit()
+    return JSONResponse({"status": "queued", "job_id": job_id})

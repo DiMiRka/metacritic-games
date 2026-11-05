@@ -1,13 +1,13 @@
+"""Получение игры с Metacritic и сохранение её в каталог"""
+
 from datetime import datetime
 
-from sqlalchemy import delete, func, literal_column
+from sqlalchemy import delete, func, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.catalog.models import Game, GamePlatform, ReviewSource
-from app.enrichment.embeddings import Embedder, embedding_text
-from app.enrichment.llm import Summarizer
-from app.enrichment.summaries import update_summary
+from app.catalog.models import Game, GamePlatform, GameReview, ReviewSource
+from app.core.errors import PermanentError
 from app.scraper.client import MetacriticClient
 from app.scraper.parsers import (
     GameData,
@@ -21,16 +21,23 @@ from app.scraper.parsers import (
 REVIEWS_LIMIT = 30
 
 
-class GameNotFoundError(Exception):
+class GameNotFoundError(PermanentError):
     pass
 
 
-class EnrichmentError(Exception):
-    """Игра сохранена, но эмбеддинг или резюме не получились"""
+class ScrapeFormatError(PermanentError):
+    """Ответ Metacritic не удалось разобрать: скорее всего, поменялся формат"""
+
+
+_PARSE_ERRORS = (KeyError, TypeError, AttributeError, ValueError)
 
 
 async def fetch_game(client: MetacriticClient, slug: str) -> GameData:
-    data = parse_game(await client.game(slug))
+    raw = await client.game(slug)
+    try:
+        data = parse_game(raw)
+    except _PARSE_ERRORS as exc:
+        raise ScrapeFormatError(f"карточка {slug}: {exc!r}") from exc
     if data is None:
         raise GameNotFoundError(slug)
 
@@ -39,18 +46,38 @@ async def fetch_game(client: MetacriticClient, slug: str) -> GameData:
         if p.platform == data.lead_platform:
             userscore = data.lead_userscore
         else:
-            userscore = parse_user_score(await client.user_stats(slug, p.platform))
+            stats = await client.user_stats(slug, p.platform)
+            try:
+                userscore = parse_user_score(stats)
+            except _PARSE_ERRORS as exc:
+                raise ScrapeFormatError(f"оценки {slug}/{p.platform}: {exc!r}") from exc
         platforms.append(PlatformScore(p.platform, p.name, p.metascore, userscore))
     data.platforms = platforms
     return data
 
 
+async def fetch_reviews(
+    client: MetacriticClient, data: GameData
+) -> dict[ReviewSource, list[Review]]:
+    reviews = {ReviewSource.CRITIC: [], ReviewSource.USER: []}
+    try:
+        if data.critic_reviews_total:
+            reviews[ReviewSource.CRITIC] = parse_reviews(
+                await client.critic_reviews(data.slug, REVIEWS_LIMIT)
+            )
+        if data.user_reviews_total:
+            reviews[ReviewSource.USER] = parse_reviews(
+                await client.user_reviews(data.slug, REVIEWS_LIMIT)
+            )
+    except _PARSE_ERRORS as exc:
+        raise ScrapeFormatError(f"отзывы {data.slug}: {exc!r}") from exc
+    return reviews
+
+
 async def upsert_game(
-    session: AsyncSession,
-    data: GameData,
-    processed_at: datetime,
-    embedding: list[float] | None = None,
+    session: AsyncSession, data: GameData, processed_at: datetime
 ) -> tuple[int, bool]:
+    """Игра и её платформы; эмбеддинг не трогается, его пересчитывает отдельная задача"""
     values = {
         "slug": data.slug,
         "title": data.title,
@@ -62,8 +89,6 @@ async def upsert_game(
         "genres": data.genres,
         "last_processed_at": processed_at,
     }
-    if embedding is not None:
-        values["embedding"] = embedding
     stmt = insert(Game).values(**values)
     stmt = stmt.on_conflict_do_update(
         index_elements=[Game.slug],
@@ -102,49 +127,36 @@ async def upsert_game(
     return game_id, bool(inserted)
 
 
-async def fetch_reviews(
-    client: MetacriticClient, data: GameData
-) -> dict[ReviewSource, list[Review]]:
-    reviews = {ReviewSource.CRITIC: [], ReviewSource.USER: []}
-    if data.critic_reviews_total:
-        reviews[ReviewSource.CRITIC] = parse_reviews(
-            await client.critic_reviews(data.slug, REVIEWS_LIMIT)
-        )
-    if data.user_reviews_total:
-        reviews[ReviewSource.USER] = parse_reviews(
-            await client.user_reviews(data.slug, REVIEWS_LIMIT)
-        )
-    return reviews
-
-
-async def process_game(
-    session_factory: async_sessionmaker[AsyncSession],
-    client: MetacriticClient,
-    slug: str,
-    processed_at: datetime,
-    summarizer: Summarizer | None = None,
-    embedder: Embedder | None = None,
-) -> bool:
-    data = await fetch_game(client, slug)
-    reviews = await fetch_reviews(client, data) if summarizer else {}
-
-    # Сбой эмбеддинга или LLM не мешает сохранить игру, ошибка уходит в runs.errors
-    failures = []
-    embedding = None
-    if embedder:
-        try:
-            embedding = await embedder.embed(embedding_text(data))
-        except Exception as exc:
-            failures.append(f"embedding: {type(exc).__name__}: {exc}")
-
-    async with session_factory() as session, session.begin():
-        game_id, created = await upsert_game(session, data, processed_at, embedding)
-
+async def replace_reviews(
+    session: AsyncSession, game_id: int, reviews: dict[ReviewSource, list[Review]]
+) -> None:
+    """Набор отзывов по игре и источнику заменяется целиком"""
     for source, items in reviews.items():
-        try:
-            await update_summary(session_factory, summarizer, game_id, data.title, source, items)
-        except Exception as exc:
-            failures.append(f"{source}: {type(exc).__name__}: {exc}")
-    if failures:
-        raise EnrichmentError("; ".join(failures))
-    return created
+        await session.execute(
+            delete(GameReview).where(GameReview.game_id == game_id, GameReview.source == source)
+        )
+        session.add_all(
+            GameReview(
+                game_id=game_id,
+                source=source,
+                position=position,
+                text=review.text,
+                score=review.score,
+                author=(review.author or "")[:300] or None,
+            )
+            for position, review in enumerate(items)
+        )
+    await session.flush()
+
+
+async def load_reviews(session: AsyncSession, game_id: int, source: str) -> list[Review]:
+    rows = await session.execute(
+        select(GameReview.text, GameReview.score, GameReview.author)
+        .where(GameReview.game_id == game_id, GameReview.source == source)
+        .order_by(GameReview.position)
+    )
+    return [Review(text, score, author) for text, score, author in rows]
+
+
+async def save_embedding(session: AsyncSession, game_id: int, vector: list[float]) -> None:
+    await session.execute(update(Game).where(Game.id == game_id).values(embedding=vector))

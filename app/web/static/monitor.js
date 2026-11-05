@@ -42,14 +42,25 @@
     live.textContent = "● переподключение";
   });
 
+  const post = (url) => fetch(url, { method: "POST", headers: { "X-CSRF-Token": csrfToken } });
+
+  // Кнопки «повторить» приходят в каждом обновлении через SSE, слушаем делегированием
+  monitor.addEventListener("click", async (event) => {
+    const retry = event.target.closest("[data-retry]");
+    if (!retry) return;
+    retry.disabled = true;
+    const response = await post(`/api/jobs/${retry.dataset.retry}/retry`).catch(() => null);
+    const body = response ? await response.json().catch(() => ({})) : {};
+    message.textContent = response?.ok
+      ? `Задача #${retry.dataset.retry} снова в очереди`
+      : body.detail || "Не удалось поставить задачу заново";
+  });
+
   button.addEventListener("click", async () => {
     button.disabled = true;
     message.textContent = "Отправляю запрос…";
     try {
-      const response = await fetch(runUrl, {
-        method: "POST",
-        headers: { "X-CSRF-Token": csrfToken },
-      });
+      const response = await post(runUrl);
       const body = await response.json().catch(() => ({}));
       message.textContent = response.ok
         ? "Запрос принят, воркер начнёт проход в течение пары секунд"

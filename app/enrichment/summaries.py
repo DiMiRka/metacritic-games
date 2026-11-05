@@ -20,6 +20,22 @@ def reviews_hash(reviews: list[Review]) -> str:
     return digest.hexdigest()
 
 
+async def summary_outdated(
+    session: AsyncSession, game_id: int, source: ReviewSource, reviews: list[Review], model: str
+) -> bool:
+    """Нужно ли пересчитать резюме: отзывов достаточно, а их набор или модель изменились"""
+    if len(reviews) < MIN_REVIEWS:
+        return False
+    existing = (
+        await session.execute(
+            select(ReviewSummary.reviews_hash, ReviewSummary.model).where(
+                ReviewSummary.game_id == game_id, ReviewSummary.source == source
+            )
+        )
+    ).first()
+    return existing != (reviews_hash(reviews), model)
+
+
 async def update_summary(
     session_factory: async_sessionmaker[AsyncSession],
     summarizer: Summarizer,

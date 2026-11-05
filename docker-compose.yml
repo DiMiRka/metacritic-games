@@ -62,6 +62,8 @@ services:
   worker:
     <<: *app
     command: ["python", "-m", "app", "worker"]
+    # Больше WORKER_SHUTDOWN_GRACE_SECONDS: воркер успевает доделать задачи и вернуть остальные
+    stop_grace_period: 45s
     environment:
       <<: *no-db-secrets
       DATABASE_URL: postgresql+asyncpg://app_worker:${APP_WORKER_DB_PASSWORD:?задайте APP_WORKER_DB_PASSWORD в .env}@db:5432/${POSTGRES_DB}

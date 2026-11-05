@@ -1,21 +1,21 @@
 from datetime import datetime, timedelta
+from typing import Any
 
 from pydantic import BaseModel
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
 from app.catalog.models import Game, ReviewSummary
-from app.core.clock import day_bounds
-from app.core.config import settings
-from app.crawler.lock import crawl_lock_held
-from app.crawler.models import CrawlState, Run, RunStatus, WorkerHeartbeat
+from app.core.clock import day_bounds, now_tz
+from app.crawler.models import CrawlState, Run, RunItem, RunStatus, WorkerHeartbeat
+from app.crawler.runs import run_stats
+from app.jobs.models import ACTIVE_STATUSES, Breaker, Job, JobKind, JobStatus
 
 WORKER_STALE_SECONDS = 45
 RECENT_RUNS = 10
 RECENT_ERRORS = 10
-# Запись осталась в running, а блокировку никто не держит: воркер упал посреди прохода
-STALE = "stale"
+RECENT_DEAD = 10
 
 
 class WorkerOut(BaseModel):
@@ -42,9 +42,37 @@ class RunOut(BaseModel):
 
 class ErrorOut(BaseModel):
     run_id: int
-    started_at: datetime
+    created_at: datetime
     slug: str | None
+    stage: str
+    status: str
     error: str
+
+
+class QueueRow(BaseModel):
+    kind: str
+    queued: int = 0
+    running: int = 0
+    dead: int = 0
+
+
+class JobOut(BaseModel):
+    id: int
+    kind: str
+    payload: dict[str, Any]
+    attempts: int
+    max_attempts: int
+    locked_by: str | None
+    locked_until: datetime | None
+    last_error: str | None
+    finished_at: datetime | None
+
+
+class BreakerOut(BaseModel):
+    name: str
+    state: str
+    failures: int
+    opened_until: datetime | None
 
 
 class Counters(BaseModel):
@@ -62,34 +90,19 @@ class MonitorSnapshot(BaseModel):
     now: datetime
     workers: list[WorkerOut]
     current_run: RunOut | None
+    collect_active: bool
     runs: list[RunOut]
     errors: list[ErrorOut]
+    queue: list[QueueRow]
+    expired: list[JobOut]
+    dead: list[JobOut]
+    breakers: list[BreakerOut]
     counters: Counters
 
 
-def _run_out(run: Run, now: datetime, current_id: int | None, logins: dict[int, str]) -> RunOut:
-    status = run.status
-    if status == RunStatus.RUNNING and run.id != current_id:
-        status = STALE
-    end = run.finished_at or (now if status == RunStatus.RUNNING else None)
-    return RunOut(
-        id=run.id,
-        trigger=run.trigger,
-        status=status,
-        started_at=run.started_at,
-        finished_at=run.finished_at,
-        processed=run.processed,
-        created=run.created,
-        updated=run.updated,
-        errors_count=len(run.errors),
-        duration_seconds=(end - run.started_at).total_seconds() if end else None,
-        requested_by=logins.get(run.requested_by) if run.requested_by else None,
-    )
-
-
 async def worker_alive(session: AsyncSession, now: datetime | None = None) -> bool:
-    now = now or datetime.now(settings.tz)
-    fresh = now - timedelta(seconds=WORKER_STALE_SECONDS)
+    """Есть ли хотя бы один живой экземпляр воркера"""
+    fresh = (now or now_tz()) - timedelta(seconds=WORKER_STALE_SECONDS)
     count = await session.scalar(
         select(func.count())
         .select_from(WorkerHeartbeat)
@@ -98,8 +111,54 @@ async def worker_alive(session: AsyncSession, now: datetime | None = None) -> bo
     return bool(count)
 
 
+async def _runs(session: AsyncSession, now: datetime) -> list[RunOut]:
+    runs = (await session.scalars(select(Run).order_by(Run.id.desc()).limit(RECENT_RUNS))).all()
+    stats = await run_stats(session, [r.id for r in runs])
+    requester_ids = {r.requested_by for r in runs if r.requested_by}
+    logins = {}
+    if requester_ids:
+        rows = await session.execute(select(User.id, User.login).where(User.id.in_(requester_ids)))
+        logins = dict(rows.all())
+    result = []
+    for run in runs:
+        s = stats.get(run.id)
+        end = run.finished_at or (now if run.status == RunStatus.RUNNING else None)
+        result.append(
+            RunOut(
+                id=run.id,
+                trigger=run.trigger,
+                status=run.status,
+                started_at=run.started_at,
+                finished_at=run.finished_at,
+                processed=s.processed if s else 0,
+                created=s.created if s else 0,
+                updated=s.updated if s else 0,
+                errors_count=s.failed if s else 0,
+                duration_seconds=(end - run.started_at).total_seconds() if end else None,
+                requested_by=logins.get(run.requested_by) if run.requested_by else None,
+            )
+        )
+    return result
+
+
+async def _queue(session: AsyncSession) -> list[QueueRow]:
+    rows = await session.execute(
+        select(Job.kind, Job.status, func.count())
+        .where(Job.status.in_([*ACTIVE_STATUSES, JobStatus.DEAD]))
+        .group_by(Job.kind, Job.status)
+    )
+    by_kind = {kind: QueueRow(kind=kind) for kind in JobKind}
+    for kind, status, count in rows:
+        setattr(by_kind[kind], status, count)
+    return list(by_kind.values())
+
+
+def _job_out(job: Job) -> JobOut:
+    return JobOut.model_validate(job, from_attributes=True)
+
+
 async def snapshot(session: AsyncSession, now: datetime | None = None) -> MonitorSnapshot:
-    now = now or datetime.now(settings.tz)
+    now = now or now_tz()
     today, day_start = day_bounds(now)
     fresh = now - timedelta(seconds=WORKER_STALE_SECONDS)
 
@@ -117,29 +176,37 @@ async def snapshot(session: AsyncSession, now: datetime | None = None) -> Monito
         for h in heartbeats
     ]
 
-    runs = (await session.scalars(select(Run).order_by(Run.id.desc()).limit(RECENT_RUNS))).all()
-    latest_running = next((r for r in runs if r.status == RunStatus.RUNNING), None)
-    current = latest_running if await crawl_lock_held(session) else None
-    current_id = current.id if current else None
-    requester_ids = {r.requested_by for r in runs if r.requested_by}
-    logins = (
-        dict(
-            (
-                await session.execute(select(User.id, User.login).where(User.id.in_(requester_ids)))
-            ).all()
+    runs = await _runs(session, now)
+    collect_active = bool(
+        await session.scalar(
+            select(func.count())
+            .select_from(Job)
+            .where(Job.kind == JobKind.COLLECT, Job.status.in_(ACTIVE_STATUSES))
         )
-        if requester_ids
-        else {}
     )
-
-    error_rows = await session.execute(
-        text(
-            "SELECT r.id, r.started_at, e->>'slug', e->>'error' "
-            "FROM runs r, jsonb_array_elements(r.errors) WITH ORDINALITY AS x(e, n) "
-            "ORDER BY r.id DESC, n DESC LIMIT :limit"
-        ),
-        {"limit": RECENT_ERRORS},
-    )
+    errors = (
+        await session.scalars(
+            select(RunItem)
+            .where(RunItem.error.is_not(None))
+            .order_by(RunItem.id.desc())
+            .limit(RECENT_ERRORS)
+        )
+    ).all()
+    expired = (
+        await session.scalars(
+            select(Job)
+            .where(Job.status == JobStatus.RUNNING, Job.locked_until < func.now())
+            .order_by(Job.locked_until)
+        )
+    ).all()
+    dead = (
+        await session.scalars(
+            select(Job)
+            .where(Job.status == JobStatus.DEAD)
+            .order_by(Job.finished_at.desc().nulls_last(), Job.id.desc())
+            .limit(RECENT_DEAD)
+        )
+    ).all()
 
     games_total, processed_today, embeddings_total = (
         await session.execute(
@@ -150,23 +217,39 @@ async def snapshot(session: AsyncSession, now: datetime | None = None) -> Monito
             ).select_from(Game)
         )
     ).one()
-    runs_today, errors_today = (
-        await session.execute(
-            select(
-                func.count(),
-                func.coalesce(func.sum(func.jsonb_array_length(Run.errors)), 0),
-            ).where(Run.started_at >= day_start)
-        )
-    ).one()
+    runs_today = await session.scalar(
+        select(func.count()).select_from(Run).where(Run.started_at >= day_start)
+    )
+    errors_today = await session.scalar(
+        select(func.count())
+        .select_from(RunItem)
+        .where(RunItem.created_at >= day_start, RunItem.status == "failed")
+    )
     state = await session.get(CrawlState, today)
 
     return MonitorSnapshot(
         now=now,
         workers=workers,
-        current_run=_run_out(current, now, current_id, logins) if current else None,
-        runs=[_run_out(r, now, current_id, logins) for r in runs],
+        current_run=next((r for r in runs if r.status == RunStatus.RUNNING), None),
+        collect_active=collect_active,
+        runs=runs,
         errors=[
-            ErrorOut(run_id=i, started_at=s, slug=slug, error=e) for i, s, slug, e in error_rows
+            ErrorOut(
+                run_id=e.run_id,
+                created_at=e.created_at,
+                slug=e.slug,
+                stage=e.stage,
+                status=e.status,
+                error=e.error,
+            )
+            for e in errors
+        ],
+        queue=await _queue(session),
+        expired=[_job_out(j) for j in expired],
+        dead=[_job_out(j) for j in dead],
+        breakers=[
+            BreakerOut.model_validate(b, from_attributes=True)
+            for b in (await session.scalars(select(Breaker).order_by(Breaker.name))).all()
         ],
         counters=Counters(
             games_total=games_total,

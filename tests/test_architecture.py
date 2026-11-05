@@ -12,14 +12,15 @@ APP = Path(__file__).parents[1] / "app"
 
 ALLOWED = {
     "core": set(),
+    "jobs": {"core"},
     "scraper": {"core"},
     "catalog": {"core"},
     "auth": {"core"},
     "enrichment": {"core", "catalog", "scraper"},
-    "crawler": {"core", "catalog", "scraper", "enrichment", "auth"},
-    "monitoring": {"core", "catalog", "crawler", "auth"},
-    "web": {"core", "catalog", "crawler", "monitoring", "auth"},
-    "worker": {"core", "crawler", "enrichment", "scraper"},
+    "crawler": {"core", "catalog", "scraper", "enrichment", "auth", "jobs"},
+    "monitoring": {"core", "catalog", "crawler", "auth", "jobs"},
+    "web": {"core", "catalog", "crawler", "monitoring", "auth", "jobs"},
+    "worker": {"core", "crawler", "enrichment", "scraper", "jobs"},
     "cli": {"core", "auth", "worker"},
     "__main__": {"cli"},
 }

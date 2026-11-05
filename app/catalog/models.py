@@ -140,3 +140,25 @@ class Letsplay(Base):
     game: Mapped[Game] = relationship(back_populates="letsplay")
 
     __table_args__ = (Index("ix_letsplays_status", "status"),)
+
+
+class GameReview(Base):
+    """Последний набор отзывов по игре и источнику, при каждом обходе заменяется целиком"""
+
+    __tablename__ = "game_reviews"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    game_id: Mapped[int] = mapped_column(ForeignKey("games.id", ondelete="CASCADE"))
+    source: Mapped[str] = mapped_column(String(10))
+    position: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    score: Mapped[float | None] = mapped_column(Float)
+    author: Mapped[str | None] = mapped_column(String(300))
+    fetched_at: Mapped[datetime] = created_column()
+
+    __table_args__ = (
+        UniqueConstraint(
+            "game_id", "source", "position", name="uq_game_reviews_game_id_source_position"
+        ),
+        CheckConstraint("source IN ('critic', 'user')", name="source"),
+    )

@@ -32,9 +32,10 @@ async def conn(db_engine, session_factory):
 
 
 GAME_INSERT = "INSERT INTO games (slug, title) VALUES ('x', 'X')"
-RUN_INSERT = (
-    "INSERT INTO runs (trigger, status, processed, created, updated) "
-    "VALUES ('schedule', 'running', 0, 0, 0)"
+RUN_INSERT = "INSERT INTO runs (trigger, status) VALUES ('schedule', 'running')"
+JOB_INSERT = (
+    "INSERT INTO jobs (kind, status, priority, attempts, max_attempts) "
+    "VALUES ('collect', 'queued', 0, 0, 5)"
 )
 
 
@@ -51,6 +52,9 @@ RUN_INSERT = (
         ("SELECT count(*) FROM sessions", True),
         ("INSERT INTO login_attempts (ip, login) VALUES ('1.1.1.1', 'u')", True),
         ("CREATE TABLE web_ddl (id int)", False),
+        (JOB_INSERT, True),
+        ("SELECT count(*) FROM run_items", True),
+        ("DELETE FROM run_items", False),
     ],
 )
 async def test_web_role(conn, sql, expected) -> None:
@@ -70,6 +74,8 @@ async def test_web_role(conn, sql, expected) -> None:
         ("SELECT count(*) FROM login_attempts", False),
         ("CREATE TABLE worker_ddl (id int)", False),
         ("DROP TABLE games", False),
+        (JOB_INSERT, True),
+        ("DELETE FROM game_reviews", True),
     ],
 )
 async def test_worker_role(conn, sql, expected) -> None:

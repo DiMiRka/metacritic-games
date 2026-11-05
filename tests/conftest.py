@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import (
 import app.auth.models
 import app.catalog.models
 import app.crawler.models
+import app.jobs.models
 from app.auth.models import User
 from app.auth.service import create_session, csrf_token_for, hash_password
 from app.catalog.models import EMBEDDING_DIM, ReviewSource

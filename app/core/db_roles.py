@@ -21,7 +21,11 @@ WORKER_TABLES = (
     "letsplays",
     "crawl_state",
     "runs",
+    "run_items",
     "worker_heartbeats",
+    "jobs",
+    "game_reviews",
+    "breakers",
 )
 WEB_READ_TABLES = (
     "games",
@@ -31,8 +35,11 @@ WEB_READ_TABLES = (
     "runs",
     "crawl_state",
     "worker_heartbeats",
+    "run_items",
+    "breakers",
 )
-WEB_WRITE_TABLES = ("users", "sessions", "login_attempts")
+# jobs: сайт ставит collect и повторяет dead-задачи
+WEB_WRITE_TABLES = ("users", "sessions", "login_attempts", "jobs")
 DML = "SELECT, INSERT, UPDATE, DELETE"
 
 

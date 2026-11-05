@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.catalog.models import ReviewSource
 from app.core.config import settings
+from app.core.errors import PermanentError
 from app.scraper.parsers import Review
 
 log = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ class ReviewDigest(BaseModel):
         return ReviewDigest(likes=clean(self.likes), dislikes=clean(self.dislikes))
 
 
-class SummaryError(Exception):
+class SummaryError(PermanentError):
     pass
 
 

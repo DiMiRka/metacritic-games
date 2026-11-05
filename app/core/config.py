@@ -1,6 +1,10 @@
+import os
+import socket
+import warnings
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,10 +20,31 @@ class Settings(BaseSettings):
 
     timezone: str = "Europe/Moscow"
     batch_size: int = 20
-    concurrency: int = 3
     crawl_interval_minutes: int = 60
     crawl_on_start: bool = True
     manual_run_cooldown_minutes: int = 10
+
+    # Очередь задач
+    worker_id: str = ""
+    job_lease_seconds: int = 300
+    job_max_attempts: int = 5
+    job_poll_seconds: float = 5.0
+    job_retry_base_seconds: float = 30.0
+    job_retry_max_seconds: float = 3600.0
+    scrape_concurrency: int = 3
+    # Устаревший синоним SCRAPE_CONCURRENCY
+    concurrency: int | None = None
+    summary_concurrency: int = 2
+    embed_concurrency: int = 1
+    letsplay_concurrency: int = 1
+    worker_shutdown_grace_seconds: float = 30.0
+
+    # Автоматы защиты от массового сбоя
+    breaker_metacritic_threshold: int = 5
+    breaker_metacritic_open_seconds: float = 600.0
+    breaker_llm_threshold: int = 3
+    breaker_llm_open_seconds: float = 1800.0
+    breaker_probe_seconds: float = 60.0
 
     session_ttl_hours: int = 12
     login_max_attempts: int = 5
@@ -44,6 +69,22 @@ class Settings(BaseSettings):
 
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_cache_dir: str = "data/models"
+
+    @model_validator(mode="after")
+    def _legacy_concurrency(self) -> "Settings":
+        if self.concurrency is not None:
+            warnings.warn(
+                "CONCURRENCY устарела, используйте SCRAPE_CONCURRENCY",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if "scrape_concurrency" not in self.model_fields_set:
+                self.scrape_concurrency = self.concurrency
+        return self
+
+    @property
+    def worker_identity(self) -> str:
+        return self.worker_id or f"{socket.gethostname()}:{os.getpid()}"
 
     @property
     def is_prod(self) -> bool:
