@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% from "_macros.html" import score, cover %}
+
+{% block title %}{{ game.title }} — Игры Metacritic{% endblock %}
+
+{% block content %}
+<a class="back" href="/">← Все игры</a>
+
+<article class="game">
+  <div class="game__head">
+    {{ cover(game, "cover--large") }}
+    <div class="game__info">
+      <h1>{{ game.title }}</h1>
+      <dl class="facts">
+        <dt>Релиз</dt><dd>{{ game.release_date | ru_date }}</dd>
+        {% if game.developer %}<dt>Разработчик</dt><dd>{{ game.developer }}</dd>{% endif %}
+        {% if game.genres %}<dt>Жанр</dt><dd>{{ game.genres | join(", ") }}</dd>{% endif %}
+      </dl>
+
+      <table class="platforms">
+        <thead><tr><th>Платформа</th><th>Metascore</th><th>Игроки</th></tr></thead>
+        <tbody>
+          {% for p in platforms %}
+            <tr>
+              <td>{{ p.platform_name }}</td>
+              <td>{{ score(p.metascore) }}</td>
+              <td>{{ score(p.userscore, 10) }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <a class="source" href="https://www.metacritic.com/game/{{ game.slug }}/" target="_blank" rel="noopener">
+        Страница на Metacritic ↗
+      </a>
+    </div>
+  </div>
+
+  {% if game.description %}
+  <section>
+    <h2>Описание</h2>
+    <p class="description">{{ game.description }}</p>
+  </section>
+  {% endif %}
+
+  {% if game.video_url %}
+  <section>
+    <h2>Видео</h2>
+    {% if game.video_url.endswith(".html") %}
+      <div class="video"><iframe src="{{ game.video_url }}" title="Видео {{ game.title }}"
+           allowfullscreen loading="lazy"></iframe></div>
+    {% else %}
+      <a href="{{ game.video_url }}" target="_blank" rel="noopener">Смотреть видео ↗</a>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <section>
+    <h2>Что говорят</h2>
+    {% if summaries %}
+      <div class="opinions">
+        {% for source, label in [("critic", "Критики"), ("user", "Игроки")] %}
+          {% set s = summaries.get(source) %}
+          <div class="opinion">
+            <h3>{{ label }}{% if s %} <small>по {{ s.reviews_count }} отзывам</small>{% endif %}</h3>
+            {% if s %}
+              {% if s.likes %}<ul class="pros">{% for x in s.likes %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
+              {% if s.dislikes %}<ul class="cons">{% for x in s.dislikes %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
+            {% else %}
+              <p class="muted">Пока мало отзывов для резюме</p>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">Отзывов пока нет или резюме ещё не готово</p>
+    {% endif %}
+  </section>
+
+  {% if game.letsplay and game.letsplay.status == "done" %}
+  <section>
+    <h2>Мнение летсплейщика</h2>
+    <p class="description">{{ game.letsplay.conclusion }}</p>
+    <a href="{{ game.letsplay.video_url }}" target="_blank" rel="noopener">{{ game.letsplay.title or "Ролик на YouTube" }} ↗</a>
+  </section>
+  {% endif %}
+
+  {% if similar %}
+  <section>
+    <h2>Похожие игры</h2>
+    <ul class="similar">
+      {% for other in similar %}
+        <li><a href="/games/{{ other.slug }}">{{ cover(other, "cover--small") }}<span>{{ other.title }}</span></a></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</article>
+{% endblock %}

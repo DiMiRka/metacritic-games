@@ -10,3 +10,4 @@ build/
 data/
 SKYTEC_TEST_PLAN.md
 docs/
+.claude/

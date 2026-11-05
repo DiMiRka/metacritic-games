@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block title %}Игра не найдена — Игры Metacritic{% endblock %}
+
+{% block content %}
+<div class="empty">
+  <h1>Игра не найдена</h1>
+  <p class="muted">В базе нет игры «{{ slug }}». Возможно, обход до неё ещё не дошёл</p>
+  <a href="/">← К каталогу</a>
+</div>
+{% endblock %}

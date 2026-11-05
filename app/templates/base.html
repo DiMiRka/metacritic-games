@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Игры Metacritic{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar__inner">
+      <a class="logo" href="/">Игры<span>Metacritic</span></a>
+      <nav class="topnav">
+        <a href="/">Каталог</a>
+        <a href="/docs">API</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="wrap footer">
+    Данные: <a href="https://www.metacritic.com/game/" rel="noopener" target="_blank">Metacritic</a>.
+    Резюме отзывов сгенерированы нейросетью и могут содержать неточности
+  </footer>
+</body>
+</html>

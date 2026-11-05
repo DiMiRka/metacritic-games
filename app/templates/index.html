@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block content %}
+<form class="filters" action="/" method="get"
+      hx-get="/" hx-target="#results" hx-push-url="true"
+      hx-trigger="input changed delay:300ms from:input[name=q], change from:select, submit">
+  <input class="filters__search" type="search" name="q" value="{{ filters.q }}"
+         placeholder="Поиск по названию" autocomplete="off" aria-label="Поиск по названию">
+  <select name="platform" aria-label="Платформа">
+    <option value="">Все платформы</option>
+    {% for p in platforms %}
+      <option value="{{ p.slug }}" {% if p.slug == filters.platform %}selected{% endif %}>
+        {{ p.name }} ({{ p.games }})
+      </option>
+    {% endfor %}
+  </select>
+  <select name="sort" aria-label="Сортировка">
+    <option value="">По умолчанию</option>
+    {% for value, label in sort_labels.items() %}
+      <option value="{{ value }}" {% if value == filters.sort %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <noscript><button type="submit">Найти</button></noscript>
+</form>
+
+<div id="results">
+  {% include "_results.html" %}
+</div>
+{% endblock %}

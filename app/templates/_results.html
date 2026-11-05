@@ -1,0 +1,32 @@
+{% from "_macros.html" import score, cover %}
+<p class="summary-line">
+  {% if result.total %}Найдено игр: {{ result.total }}{% else %}Ничего не найдено{% endif %}
+</p>
+
+<ul class="grid">
+  {% for row in result.items %}
+    {% set game = row.game %}
+    <li class="card">
+      <a class="card__link" href="/games/{{ game.slug }}">
+        {{ cover(game) }}
+        <div class="card__body">
+          <h2 class="card__title">{{ game.title }}</h2>
+          <p class="card__date">{{ game.release_date | ru_date }}</p>
+          <div class="card__scores">
+            {{ score(row.metascore, 100, "Metascore") }}
+            {{ score(row.userscore, 10, "Оценка игроков") }}
+          </div>
+          <p class="card__platforms">{{ game.platforms | map(attribute="platform_name") | join(" · ") }}</p>
+        </div>
+      </a>
+    </li>
+  {% endfor %}
+</ul>
+
+{% if result.pages > 1 %}
+<nav class="pager" hx-target="#results" hx-push-url="true">
+  {% if prev_url %}<a href="{{ prev_url }}" hx-get="{{ prev_url }}">← Назад</a>{% else %}<span></span>{% endif %}
+  <span>Страница {{ result.page }} из {{ result.pages }}</span>
+  {% if next_url %}<a href="{{ next_url }}" hx-get="{{ next_url }}">Дальше →</a>{% else %}<span></span>{% endif %}
+</nav>
+{% endif %}

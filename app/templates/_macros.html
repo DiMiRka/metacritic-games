@@ -1,0 +1,14 @@
+{% macro score(value, scale=100, label=None) -%}
+  <span class="score score--{{ score_level(value, scale) }}{% if scale == 10 %} score--user{% endif %}"
+        {% if label %}title="{{ label }}"{% endif %}>
+    {%- if value is none %}—{% elif scale == 10 %}{{ '%.1f' | format(value) }}{% else %}{{ value }}{% endif -%}
+  </span>
+{%- endmacro %}
+
+{% macro cover(game, size="") -%}
+  {% if game.cover_url %}
+    <img class="cover {{ size }}" src="{{ game.cover_url }}" alt="" loading="lazy" referrerpolicy="no-referrer">
+  {% else %}
+    <div class="cover cover--empty {{ size }}">{{ game.title[:1] }}</div>
+  {% endif %}
+{%- endmacro %}
