@@ -14,6 +14,9 @@ log = logging.getLogger(__name__)
 
 MAX_REVIEW_CHARS = 1200
 MAX_POINTS = 6
+# У SDK по умолчанию 10 минут на запрос, зависший провайдер остановил бы весь проход
+REQUEST_TIMEOUT = 60.0
+MAX_RETRIES = 2
 
 SYSTEM_PROMPT = """\
 Ты анализируешь отзывы на видеоигру и коротко обобщаешь мнения авторов.
@@ -81,7 +84,9 @@ def build_user_prompt(title: str, source: ReviewSource, reviews: list[Review]) -
 class AnthropicSummarizer:
     def __init__(self, api_key: str, model: str, client: AsyncAnthropic | None = None) -> None:
         self.model = model
-        self._client = client or AsyncAnthropic(api_key=api_key, max_retries=3)
+        self._client = client or AsyncAnthropic(
+            api_key=api_key, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES
+        )
 
     async def summarize(
         self, title: str, source: ReviewSource, reviews: list[Review]
@@ -113,7 +118,9 @@ class OpenAICompatibleSummarizer:
         client: AsyncOpenAI | None = None,
     ) -> None:
         self.model = model
-        self._client = client or AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=3)
+        self._client = client or AsyncOpenAI(
+            api_key=api_key, base_url=base_url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES
+        )
 
     async def summarize(
         self, title: str, source: ReviewSource, reviews: list[Review]
