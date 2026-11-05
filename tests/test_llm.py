@@ -2,7 +2,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.llm import AnthropicSummarizer, ReviewDigest, SummaryError, build_user_prompt
+from app.config import settings
+from app.llm import (
+    AnthropicSummarizer,
+    OpenAICompatibleSummarizer,
+    ReviewDigest,
+    SummaryError,
+    build_summarizer,
+    build_user_prompt,
+)
 from app.models import ReviewSource
 from app.scraper.parsers import Review
 from app.summaries import reviews_hash
@@ -71,6 +79,66 @@ async def test_anthropic_summarizer_parses_structured_output() -> None:
     assert messages.kwargs["output_config"]["format"]["type"] == "json_schema"
     assert review.text not in messages.kwargs["system"]
     assert review.text in messages.kwargs["messages"][0]["content"]
+
+
+class FakeCompletions:
+    def __init__(self, content: str | None, finish_reason: str = "stop") -> None:
+        self.response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason=finish_reason, message=SimpleNamespace(content=content)
+                )
+            ]
+        )
+        self.kwargs: dict = {}
+
+    async def create(self, **kwargs):
+        self.kwargs = kwargs
+        return self.response
+
+
+def openai_client(completions: FakeCompletions):
+    return SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+
+async def test_openai_compatible_summarizer() -> None:
+    completions = FakeCompletions('{"likes": ["сюжет", "сюжет"], "dislikes": []}')
+    summarizer = OpenAICompatibleSummarizer(
+        "key", "gemini-3.8-flash", client=openai_client(completions)
+    )
+    review = Review("Уникальный текст отзыва", 8, None)
+
+    digest = await summarizer.summarize("G", ReviewSource.USER, [review])
+
+    assert digest == ReviewDigest(likes=["сюжет"], dislikes=[])
+    assert completions.kwargs["model"] == "gemini-3.8-flash"
+    assert completions.kwargs["response_format"]["type"] == "json_schema"
+    system, user = completions.kwargs["messages"]
+    assert system["role"] == "system"
+    assert review.text not in system["content"]
+    assert review.text in user["content"]
+
+
+async def test_openai_compatible_summarizer_raises_on_truncation() -> None:
+    completions = FakeCompletions('{"likes": [', finish_reason="length")
+    summarizer = OpenAICompatibleSummarizer("key", "m", client=openai_client(completions))
+
+    with pytest.raises(SummaryError):
+        await summarizer.summarize("G", ReviewSource.USER, [Review("ok", 1, None)])
+
+
+def test_build_summarizer_selects_provider(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "llm_provider", "openai")
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    assert build_summarizer() is None
+
+    monkeypatch.setattr(settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(settings, "llm_base_url", "https://example.test/v1/")
+    assert isinstance(build_summarizer(), OpenAICompatibleSummarizer)
+
+    monkeypatch.setattr(settings, "llm_provider", "anthropic")
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+    assert build_summarizer() is None
 
 
 async def test_anthropic_summarizer_raises_on_refusal() -> None:

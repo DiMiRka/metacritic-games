@@ -3,6 +3,7 @@ from html import escape
 from typing import Protocol
 
 from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -101,7 +102,49 @@ class AnthropicSummarizer:
         return ReviewDigest.model_validate_json(text).trimmed()
 
 
+class OpenAICompatibleSummarizer:
+    """Любой провайдер с OpenAI-совместимым API: Gemini, Groq, OpenRouter, Ollama, OpenAI"""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        base_url: str | None = None,
+        client: AsyncOpenAI | None = None,
+    ) -> None:
+        self.model = model
+        self._client = client or AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=3)
+
+    async def summarize(
+        self, title: str, source: ReviewSource, reviews: list[Review]
+    ) -> ReviewDigest:
+        response = await self._client.chat.completions.create(
+            model=self.model,
+            max_completion_tokens=4000,
+            reasoning_effort="low",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": build_user_prompt(title, source, reviews)},
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "review_digest", "schema": OUTPUT_SCHEMA, "strict": True},
+            },
+        )
+        choice = response.choices[0]
+        if choice.finish_reason != "stop" or not choice.message.content:
+            raise SummaryError(f"finish_reason={choice.finish_reason}")
+        return ReviewDigest.model_validate_json(choice.message.content).trimmed()
+
+
 def build_summarizer() -> Summarizer | None:
+    if settings.llm_provider == "openai":
+        if not settings.llm_api_key:
+            log.warning("LLM_API_KEY не задан, резюме отзывов отключены")
+            return None
+        return OpenAICompatibleSummarizer(
+            settings.llm_api_key, settings.summary_model, settings.llm_base_url or None
+        )
     if not settings.anthropic_api_key:
         log.warning("ANTHROPIC_API_KEY не задан, резюме отзывов отключены")
         return None

@@ -1,3 +1,4 @@
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,8 +21,11 @@ class Settings(BaseSettings):
         "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"
     )
 
-    anthropic_api_key: str = ""
+    llm_provider: Literal["anthropic", "openai"] = "anthropic"
     summary_model: str = "claude-haiku-5-5"
+    anthropic_api_key: str = ""
+    llm_api_key: str = ""
+    llm_base_url: str = ""
     youtube_api_key: str = ""
 
     embedding_model: str = "BAAI/bge-small-en-v1.5"
