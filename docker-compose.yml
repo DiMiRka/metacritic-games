@@ -38,7 +38,7 @@ services:
     <<: *app
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-    command: ["sh", "-c", "alembic upgrade head && python -m app.db_roles"]
+    command: ["sh", "-c", "alembic upgrade head && python -m app db-roles"]
     restart: "no"
     networks: [backend]
     mem_limit: 512m
@@ -61,7 +61,7 @@ services:
 
   worker:
     <<: *app
-    command: ["python", "-m", "app.worker"]
+    command: ["python", "-m", "app", "worker"]
     environment:
       <<: *no-db-secrets
       DATABASE_URL: postgresql+asyncpg://app_worker:${APP_WORKER_DB_PASSWORD:?задайте APP_WORKER_DB_PASSWORD в .env}@db:5432/${POSTGRES_DB}

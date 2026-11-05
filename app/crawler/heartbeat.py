@@ -2,7 +2,7 @@ from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import WorkerHeartbeat
+from app.crawler.models import WorkerHeartbeat
 
 
 async def beat(

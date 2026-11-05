@@ -1,44 +1,30 @@
 import asyncio
 import logging
-from datetime import date, datetime, time
+from datetime import datetime
 
 from sqlalchemy import func, literal, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.config import settings
+from app.auth.models import User
+from app.catalog.models import Game
+from app.core.clock import day_bounds
+from app.core.config import settings
 from app.crawler.cursor import Cursor, collect_batch
 from app.crawler.heartbeat import beat
+from app.crawler.lock import try_lock, unlock
+from app.crawler.models import CrawlPhase, CrawlState, Run, RunStatus
 from app.crawler.processor import process_game
-from app.embeddings import Embedder
-from app.llm import Summarizer
-from app.models import CrawlPhase, CrawlState, Game, Run, RunStatus, User
+from app.enrichment.embeddings import Embedder
+from app.enrichment.llm import Summarizer
 from app.scraper.client import MetacriticClient
 from app.scraper.parsers import parse_listing
 
 log = logging.getLogger(__name__)
 
-CRAWL_LOCK_KEY = 815_001
 WORKER_NAME = "crawler"
 # После стольких ошибок за сутки игра больше не берётся в обход до следующего дня
 MAX_FAILURES_PER_DAY = 2
-
-# Advisory lock с ключом bigint лежит в pg_locks как старшие и младшие 32 бита
-_LOCK_HELD = text(
-    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
-    "AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
-    "AND classid = :hi AND objid = :lo AND objsubid = 1 AND granted)"
-).bindparams(hi=CRAWL_LOCK_KEY >> 32, lo=CRAWL_LOCK_KEY & 0xFFFFFFFF)
-
-
-async def crawl_lock_held(conn: AsyncSession | AsyncConnection) -> bool:
-    """Идёт ли проход прямо сейчас, без попытки захватить блокировку"""
-    return bool(await conn.scalar(_LOCK_HELD))
-
-
-def day_bounds(now: datetime) -> tuple[date, datetime]:
-    today = now.astimezone(settings.tz).date()
-    return today, datetime.combine(today, time.min, tzinfo=settings.tz)
 
 
 async def done_today(session: AsyncSession, slugs: list[str], day_start: datetime) -> set[str]:
@@ -143,7 +129,7 @@ async def run_crawl(
 ) -> int | None:
     """Один проход обхода. Возвращает id прохода или None, если проход уже идёт."""
     async with engine.connect() as lock_conn:
-        locked = await lock_conn.scalar(select(func.pg_try_advisory_lock(CRAWL_LOCK_KEY)))
+        locked = await try_lock(lock_conn)
         await lock_conn.commit()
         if not locked:
             log.info("crawl already running, skip")
@@ -187,7 +173,7 @@ async def run_crawl(
             await beat(session_factory, WORKER_NAME, "idle")
             return run_id
         finally:
-            await lock_conn.scalar(select(func.pg_advisory_unlock(CRAWL_LOCK_KEY)))
+            await unlock(lock_conn)
             await lock_conn.commit()
 
 
@@ -208,7 +194,7 @@ async def fail_stale_runs(
 ) -> int:
     """Помечает упавшими проходы, оставшиеся в running после падения воркера."""
     async with engine.connect() as conn:
-        locked = await conn.scalar(select(func.pg_try_advisory_lock(CRAWL_LOCK_KEY)))
+        locked = await try_lock(conn)
         if not locked:
             return 0
         try:
@@ -220,5 +206,5 @@ async def fail_stale_runs(
                 )
                 return result.rowcount
         finally:
-            await conn.scalar(select(func.pg_advisory_unlock(CRAWL_LOCK_KEY)))
+            await unlock(conn)
             await conn.commit()

@@ -5,10 +5,10 @@ from typing import Any
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
-from app.config import settings
-from app.scraper.parsers import IMAGE_HOSTS, VIDEO_HOSTS, YOUTUBE_HOSTS, safe_url
+from app.core.config import settings
+from app.core.urls import IMAGE_HOSTS, VIDEO_HOSTS, YOUTUBE_HOSTS, safe_url
 
-APP_DIR = Path(__file__).parent.parent
+WEB_DIR = Path(__file__).parent
 MONTHS = [
     "января", "февраля", "марта", "апреля", "мая", "июня",
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
@@ -52,7 +52,7 @@ def auth_context(request: Request) -> dict[str, Any]:
     }
 
 
-templates = Jinja2Templates(directory=APP_DIR / "templates", context_processors=[auth_context])
+templates = Jinja2Templates(directory=WEB_DIR / "templates", context_processors=[auth_context])
 templates.env.filters["ru_date"] = ru_date
 templates.env.filters["safe_url"] = safe_url_filter
 templates.env.filters["local_time"] = local_time

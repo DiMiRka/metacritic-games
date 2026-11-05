@@ -6,6 +6,42 @@
 
 Сутки для обхода считаются по московскому времени (`TIMEZONE`), время в интерфейсе тоже московское.
 
+## Структура проекта
+
+Код разложен по предметным областям: всё про одну часть системы лежит в одном пакете.
+
+```
+app/
+  core/         настройки, подключение к базе, базовая модель, время, проверка внешних URL,
+                роли базы с минимальными правами
+  catalog/      игры: модели, запросы каталога, похожие игры, схемы JSON API
+  scraper/      клиент Metacritic (лимит запросов, повторы) и разбор ответов
+  enrichment/   LLM-резюме отзывов и эмбеддинги
+  crawler/      обход: курсор дня, обработка игры, проход с блокировкой,
+                ручной запуск через NOTIFY/LISTEN, модели обхода
+  monitoring/   снимок состояния для /monitor
+  auth/         пользователи, пароли, серверные сессии, команды для пользователей
+  web/          FastAPI: routes/ (публичные, служебные, вход), middleware/ (CSRF,
+                заголовки, лимиты), шаблоны и статика
+  worker/       процесс воркера: расписание, ручные запуски, heartbeat
+  cli.py        команды python -m app
+tests/          повторяют структуру app/, фикстуры ответов Metacritic в tests/fixtures
+migrations/     Alembic
+```
+
+Зависимости идут в одну сторону: `web` и `worker` → предметные пакеты → `core`. `core` ни от кого не зависит, `web` никто не импортирует. Правила записаны в `tests/test_architecture.py`, новый импорт против них уронит тесты.
+
+Команды:
+
+```bash
+python -m app worker                       # воркер по расписанию
+python -m app crawl                        # один проход прямо сейчас
+python -m app users create-admin <login>   # администратор, пароль через getpass
+python -m app users set-password <login>   # смена пароля, сессии пользователя завершаются
+python -m app db-roles                     # роли app_web и app_worker (делает сервис migrate)
+uvicorn app.web.app:app                    # сайт
+```
+
 ## Локальный запуск
 
 ```bash
@@ -14,10 +50,10 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db   # dev-
 python -m venv .venv && .venv/Scripts/activate   # Linux/macOS: source .venv/bin/activate
 pip install -e ".[dev]"
 alembic upgrade head
-python -m app.users create-admin admin   # пароль спросит getpass
-uvicorn app.main:app --reload   # http://localhost:8000
-python -m app.worker            # воркер по расписанию, в отдельном терминале
-python -m app.crawler           # или один проход вручную
+python -m app users create-admin admin   # пароль спросит getpass
+uvicorn app.web.app:app --reload   # http://localhost:8000
+python -m app worker             # воркер по расписанию, в отдельном терминале
+python -m app crawl              # или один проход вручную
 pytest
 ```
 
@@ -99,10 +135,10 @@ docker compose ps          # migrate: Exited (0), остальные Up
 **7а. Создать администратора**
 
 ```bash
-docker compose run --rm web python -m app.users create-admin admin
+docker compose run --rm web python -m app users create-admin admin
 ```
 
-Пароль (не короче 12 символов) вводится интерактивно и нигде не сохраняется в открытом виде. Сменить пароль: `set-password admin`, при этом все сессии пользователя завершаются.
+Пароль (не короче 12 символов) вводится интерактивно и нигде не сохраняется в открытом виде. Сменить пароль: `python -m app users set-password admin`, при этом все сессии пользователя завершаются.
 
 **8. Проверить**
 
@@ -121,7 +157,7 @@ docker compose logs -f worker
 cd /opt/metacritic-games && git pull && docker compose up -d --build
 ```
 
-Сервис `migrate` при каждом запуске применяет миграции и затем `python -m app.db_roles`. Команда идемпотентна: создаёт роли `app_web` и `app_worker` или обновляет их пароли из `.env` и заново выдаёт права. На уже работающем сервере после добавления паролей ролей в `.env` достаточно того же `docker compose up -d --build` или отдельно `docker compose run --rm migrate`.
+Сервис `migrate` при каждом запуске применяет миграции и затем `python -m app db-roles`. Команда идемпотентна: создаёт роли `app_web` и `app_worker` или обновляет их пароли из `.env` и заново выдаёт права. На уже работающем сервере после добавления паролей ролей в `.env` достаточно того же `docker compose up -d --build` или отдельно `docker compose run --rm migrate`.
 
 **Полезное**
 
@@ -139,7 +175,7 @@ docker compose exec db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > back
 
 **CORS не включён намеренно.** Без CORS-middleware браузер разрешает чужим сайтам читать ответы API только того же источника. Сервису не нужны запросы с других доменов, поэтому любое ослабление этой политики только расширило бы поверхность атаки.
 
-**CSP и заголовки.** Политику ставит middleware приложения: скрипты и стили только с собственного адреса (htmx лежит в `app/static`, инлайнового кода нет), картинки ещё с `www.metacritic.com`, iframe только с `cdn.jwplayer.com`, `frame-ancestors 'none'`. Плюс `nosniff`, `Referrer-Policy`, `Permissions-Policy`. HSTS ставит Caddy и только при `ENV=prod`. Ссылки из внешних данных (обложки, видео, летсплеи) проходят `safe_url`: только `https` и хост из списка разрешённых, а шаблоны проверяют их ещё раз перед выводом.
+**CSP и заголовки.** Политику ставит middleware приложения: скрипты и стили только с собственного адреса (htmx лежит в `app/web/static`, инлайнового кода нет), картинки ещё с `www.metacritic.com`, iframe только с `cdn.jwplayer.com`, `frame-ancestors 'none'`. Плюс `nosniff`, `Referrer-Policy`, `Permissions-Policy`. HSTS ставит Caddy и только при `ENV=prod`. Ссылки из внешних данных (обложки, видео, летсплеи) проходят `safe_url`: только `https` и хост из списка разрешённых, а шаблоны проверяют их ещё раз перед выводом.
 
 **Ограничение частоты.** `/`, `/api/games` и `/login` ограничены по IP (`RATE_LIMIT_*`). Счётчики живут в памяти процесса web: при нескольких процессах uvicorn лимит фактически умножится на их число. Сейчас процесс один, это допустимо. Для нескольких процессов счётчик нужно вынести в Redis или в базу, как это уже сделано для попыток входа.
 

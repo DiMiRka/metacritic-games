@@ -5,8 +5,12 @@ from alembic import context
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.config import settings
-from app.models import Base
+# Таблицы всех доменов должны попасть в Base.metadata
+import app.auth.models
+import app.catalog.models
+import app.crawler.models  # noqa: F401
+from app.core.config import settings
+from app.core.models import Base
 
 config = context.config
 if config.config_file_name:

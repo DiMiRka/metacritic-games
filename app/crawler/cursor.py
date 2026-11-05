@@ -1,7 +1,7 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from app.models import CrawlPhase
+from app.crawler.models import CrawlPhase
 
 ListingFetcher = Callable[[CrawlPhase, int], Awaitable[list[str]]]
 DoneFilter = Callable[[list[str]], Awaitable[set[str]]]

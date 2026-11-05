@@ -4,9 +4,10 @@ from sqlalchemy import delete, func, literal_column
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.embeddings import Embedder, embedding_text
-from app.llm import Summarizer
-from app.models import Game, GamePlatform, ReviewSource
+from app.catalog.models import Game, GamePlatform, ReviewSource
+from app.enrichment.embeddings import Embedder, embedding_text
+from app.enrichment.llm import Summarizer
+from app.enrichment.summaries import update_summary
 from app.scraper.client import MetacriticClient
 from app.scraper.parsers import (
     GameData,
@@ -16,7 +17,6 @@ from app.scraper.parsers import (
     parse_reviews,
     parse_user_score,
 )
-from app.summaries import update_summary
 
 REVIEWS_LIMIT = 30
 

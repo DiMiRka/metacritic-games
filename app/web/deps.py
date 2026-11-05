@@ -3,9 +3,9 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.auth import AuthContext, csrf_valid, load_session
-from app.config import settings
-from app.db import get_session, get_session_factory
+from app.auth.service import AuthContext, csrf_valid, load_session
+from app.core.config import settings
+from app.core.db import get_session, get_session_factory
 
 # __Host- запрещает Domain и требует Secure, в dev на http такой cookie не сохранится
 SESSION_COOKIE = "__Host-session" if settings.is_prod else "session"

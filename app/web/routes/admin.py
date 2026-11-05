@@ -1,0 +1,100 @@
+import asyncio
+import math
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.auth.service import load_session
+from app.crawler.lock import crawl_lock_held
+from app.crawler.requests import request_crawl, seconds_until_manual_run
+from app.monitoring.snapshot import MonitorSnapshot, snapshot, worker_alive
+from app.web.deps import Admin, Session, SessionFactory, require_admin, require_csrf, session_token
+from app.web.templating import templates
+
+MONITOR_INTERVAL = 2.0
+# Как часто поток мониторинга перепроверяет, что сессия ещё действует
+SESSION_RECHECK_SECONDS = 30.0
+
+router = APIRouter(dependencies=[Depends(require_admin)])
+
+
+def render_monitor(data: MonitorSnapshot) -> str:
+    return templates.get_template("_monitor.html").render(m=data)
+
+
+def sse_event(event: str, data: str) -> str:
+    lines = "\n".join(f"data: {line}" for line in data.splitlines() or [""])
+    return f"event: {event}\n{lines}\n\n"
+
+
+async def monitor_events(
+    session_factory: async_sessionmaker[AsyncSession],
+    interval: float = MONITOR_INTERVAL,
+    limit: int | None = None,
+    still_allowed: Callable[[], Awaitable[bool]] | None = None,
+    recheck_seconds: float = SESSION_RECHECK_SECONDS,
+) -> AsyncIterator[str]:
+    """Снимок мониторинга каждые interval секунд, пока сессия действует"""
+    sent = 0
+    checked_at = time.monotonic()
+    while limit is None or sent < limit:
+        if still_allowed and time.monotonic() - checked_at >= recheck_seconds:
+            if not await still_allowed():
+                yield sse_event("logout", "")
+                return
+            checked_at = time.monotonic()
+        async with session_factory() as session:
+            data = await snapshot(session)
+        yield sse_event("update", render_monitor(data))
+        sent += 1
+        if limit is None or sent < limit:
+            await asyncio.sleep(interval)
+
+
+@router.get("/monitor", response_class=HTMLResponse)
+async def monitor_page(request: Request, session: Session) -> HTMLResponse:
+    data = await snapshot(session)
+    return templates.TemplateResponse(
+        request, "monitor.html", {"m": data, "interval_ms": int(MONITOR_INTERVAL * 1000)}
+    )
+
+
+@router.get("/monitor/stream")
+async def monitor_stream(request: Request, session_factory: SessionFactory) -> StreamingResponse:
+    token = session_token(request)
+
+    async def still_allowed() -> bool:
+        async with session_factory() as db:
+            auth = await load_session(db, token)
+        return auth is not None and auth.is_admin
+
+    return StreamingResponse(
+        monitor_events(session_factory, still_allowed=still_allowed),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/api/monitor")
+async def api_monitor(session: Session) -> MonitorSnapshot:
+    return await snapshot(session)
+
+
+@router.post("/api/runs", status_code=202, dependencies=[Depends(require_csrf)])
+async def start_run(session: Session, admin: Admin) -> JSONResponse:
+    if await crawl_lock_held(session):
+        return JSONResponse({"detail": "Проход уже идёт"}, status_code=409)
+    if wait := await seconds_until_manual_run(session):
+        minutes = math.ceil(wait / 60)
+        return JSONResponse(
+            {"detail": f"Последний проход был недавно, повторить можно через {minutes} мин"},
+            status_code=429,
+            headers={"Retry-After": str(wait)},
+        )
+    if not await worker_alive(session):
+        return JSONResponse({"detail": "Воркер не отвечает"}, status_code=503)
+    await request_crawl(session, admin.user_id)
+    return JSONResponse({"status": "accepted"}, status_code=202)

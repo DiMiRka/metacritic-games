@@ -17,14 +17,20 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.auth import create_session, csrf_token_for, hash_password
-from app.config import settings
-from app.db import get_session, get_session_factory
-from app.llm import ReviewDigest
-from app.main import app
-from app.models import EMBEDDING_DIM, Base, ReviewSource, User
+# Таблицы всех доменов должны попасть в Base.metadata
+import app.auth.models
+import app.catalog.models
+import app.crawler.models
+from app.auth.models import User
+from app.auth.service import create_session, csrf_token_for, hash_password
+from app.catalog.models import EMBEDDING_DIM, ReviewSource
+from app.core.config import settings
+from app.core.db import get_session, get_session_factory
+from app.core.models import Base
+from app.enrichment.llm import ReviewDigest
+from app.web.app import app
 from app.web.deps import SESSION_COOKIE
-from app.web.ratelimit import LIMITERS
+from app.web.middleware.ratelimit import LIMITERS
 
 PASSWORD = "correct horse battery staple"
 ORIGIN = "http://test"
