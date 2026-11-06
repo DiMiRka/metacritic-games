@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.auth.service import load_session
 from app.crawler.lock import crawl_lock_held
 from app.crawler.runs import seconds_until_manual_run
-from app.crawler.stages import collect_active, enqueue_collect
+from app.crawler.stages import collect_active, request_manual_collect
 from app.jobs.queue import retry_dead
 from app.monitoring.snapshot import MonitorSnapshot, snapshot, worker_alive
 from app.web.deps import Admin, Session, SessionFactory, require_admin, require_csrf, session_token
@@ -99,7 +99,7 @@ async def start_run(session: Session, admin: Admin) -> JSONResponse:
         )
     if not await worker_alive(session):
         return JSONResponse({"detail": "Воркер не отвечает"}, status_code=503)
-    job_id = await enqueue_collect(session, "manual", admin.user_id)
+    job_id = await request_manual_collect(session, admin.user_id)
     if job_id is None:
         await session.rollback()
         return JSONResponse({"detail": "Проход уже идёт"}, status_code=409)

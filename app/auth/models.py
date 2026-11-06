@@ -2,6 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -31,6 +32,9 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
     created_at: Mapped[datetime] = created_column()
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Секрет TOTP в base32 и последний принятый шаг: один код дважды не проходит
+    totp_secret: Mapped[str | None] = mapped_column(String(64))
+    totp_last_step: Mapped[int | None] = mapped_column(BigInteger)
 
     __table_args__ = (enum_check("role", UserRole),)
 
@@ -69,4 +73,7 @@ class LoginAttempt(Base):
     login: Mapped[str] = mapped_column(String(100))
     attempted_at: Mapped[datetime] = created_column()
 
-    __table_args__ = (Index("ix_login_attempts_ip_login_at", "ip", "login", "attempted_at"),)
+    __table_args__ = (
+        Index("ix_login_attempts_ip_login_at", "ip", "login", "attempted_at"),
+        Index("ix_login_attempts_login_at", "login", "attempted_at"),
+    )

@@ -1,8 +1,11 @@
 """Роли базы с минимальными правами: python -m app db-roles
 
 Выполняется владельцем схемы после миграций (сервис migrate) и идемпотентна: создаёт роли
-или обновляет их пароли из .env, сбрасывает и заново выдаёт права на таблицы и задаёт
-права по умолчанию для таблиц будущих миграций
+или обновляет их пароли из .env, сбрасывает и заново выдаёт права на таблицы, пересоздаёт
+функции SECURITY DEFINER и задаёт права по умолчанию для таблиц будущих миграций.
+
+Писать в очередь сайт может только через функции: поставить ручной collect и повторить
+dead-задачу. Воркер чистит сессии и попытки входа тоже через функцию, без прав на эти таблицы
 """
 
 from sqlalchemy import text
@@ -40,10 +43,93 @@ WEB_READ_TABLES = (
     "run_items",
     "breakers",
     "score_history",
+    "jobs",
 )
-# jobs: сайт ставит collect и повторяет dead-задачи
-WEB_WRITE_TABLES = ("users", "sessions", "login_attempts", "jobs")
+WEB_WRITE_TABLES = ("users", "sessions", "login_attempts")
 DML = "SELECT, INSERT, UPDATE, DELETE"
+
+# Должны совпадать с crawler.stages и jobs.queue, это проверяет тест
+MANUAL_COLLECT_PRIORITY = 100
+COLLECT_DEDUPE_KEY = "collect"
+JOBS_CHANNEL = "jobs"
+# Попытки входа хранятся не меньше суток: по ним монитор показывает серии неудачных входов
+MIN_LOGIN_ATTEMPTS_KEEP_MINUTES = 24 * 60
+
+WEB_FUNCTIONS = ("request_manual_collect(integer)", "retry_dead_job(bigint)")
+WORKER_FUNCTIONS = ("purge_auth_records()",)
+
+
+def function_statements() -> list[str]:
+    """Функции с правами владельца: роль получает EXECUTE и не может больше, чем делает функция.
+    Настройки подставляются при создании, поэтому их не подменить в обход db-roles
+    """
+    max_attempts = int(settings.job_max_attempts)
+    cooldown = int(settings.manual_run_cooldown_minutes)
+    keep = max(int(settings.login_window_minutes), MIN_LOGIN_ATTEMPTS_KEEP_MINUTES)
+    header = "LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public"
+    return [
+        f"""
+CREATE OR REPLACE FUNCTION request_manual_collect(p_user_id integer) RETURNS bigint
+{header} AS $fn$
+DECLARE
+    new_id bigint;
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM users WHERE id = p_user_id AND role = 'admin' AND is_active
+    ) THEN
+        RAISE EXCEPTION 'user % is not an active admin', p_user_id USING ERRCODE = '42501';
+    END IF;
+    -- Пауза между ручными запусками: сайт проверяет её сам, здесь её нельзя обойти
+    IF EXISTS (SELECT 1 FROM runs WHERE started_at > now() - make_interval(mins => {cooldown})) THEN
+        RETURN NULL;
+    END IF;
+    INSERT INTO jobs (kind, payload, status, priority, attempts, max_attempts, dedupe_key,
+                      requested_by)
+    VALUES ('collect', '{{"trigger": "manual"}}', 'queued', {MANUAL_COLLECT_PRIORITY}, 0,
+            {max_attempts}, '{COLLECT_DEDUPE_KEY}', p_user_id)
+    ON CONFLICT (dedupe_key) WHERE status IN ('queued', 'running') DO NOTHING
+    RETURNING id INTO new_id;
+    IF new_id IS NOT NULL THEN
+        PERFORM pg_notify('{JOBS_CHANNEL}', 'collect');
+    END IF;
+    RETURN new_id;
+END
+$fn$""",
+        f"""
+CREATE OR REPLACE FUNCTION retry_dead_job(p_job_id bigint) RETURNS boolean
+{header} AS $fn$
+DECLARE
+    changed integer;
+BEGIN
+    UPDATE jobs SET status = 'queued', attempts = 0, run_after = now(), finished_at = NULL
+    WHERE id = p_job_id AND status = 'dead';
+    GET DIAGNOSTICS changed = ROW_COUNT;
+    IF changed > 0 THEN
+        PERFORM pg_notify('{JOBS_CHANNEL}', 'retry');
+    END IF;
+    RETURN changed > 0;
+END
+$fn$""",
+        f"""
+CREATE OR REPLACE FUNCTION purge_auth_records(OUT sessions integer, OUT login_attempts integer)
+{header} AS $fn$
+BEGIN
+    DELETE FROM sessions s WHERE s.expires_at < now();
+    GET DIAGNOSTICS sessions = ROW_COUNT;
+    DELETE FROM login_attempts a WHERE a.attempted_at < now() - make_interval(mins => {keep});
+    GET DIAGNOSTICS login_attempts = ROW_COUNT;
+END
+$fn$""",
+        *(
+            f"REVOKE ALL ON FUNCTION {name} FROM PUBLIC"
+            for name in (*WEB_FUNCTIONS, *WORKER_FUNCTIONS)
+        ),
+    ]
+
+
+async def create_functions(conn: AsyncConnection) -> None:
+    for statement in function_statements():
+        await conn.execute(text(statement))
 
 
 async def _ensure_role(conn: AsyncConnection, role: str, password: str) -> None:
@@ -83,11 +169,15 @@ async def apply_roles(
     database = await conn.scalar(text("SELECT current_database()"))
     roles = f'"{web_role}", "{worker_role}"'
 
+    await create_functions(conn)
     statements = [
         f'GRANT CONNECT ON DATABASE "{database}" TO {roles}',
         f"GRANT USAGE ON SCHEMA public TO {roles}",
         f"REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {roles}",
         f"REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {roles}",
+        f"REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM {roles}",
+        f'GRANT EXECUTE ON FUNCTION {", ".join(WEB_FUNCTIONS)} TO "{web_role}"',
+        f'GRANT EXECUTE ON FUNCTION {", ".join(WORKER_FUNCTIONS)} TO "{worker_role}"',
         f'GRANT {DML} ON {", ".join(WORKER_TABLES)} TO "{worker_role}"',
         # Воркер проверяет, что пользователь из NOTIFY существует, хеши паролей ему не видны
         f'GRANT SELECT (id) ON users TO "{worker_role}"',

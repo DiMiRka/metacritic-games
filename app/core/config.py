@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     embed_concurrency: int = 1
     letsplay_concurrency: int = 1
     worker_shutdown_grace_seconds: float = 30.0
+    # Файл, который воркер обновляет после каждого удачного heartbeat, для healthcheck в compose
+    worker_health_file: str = ""
 
     # Автоматы защиты от массового сбоя
     breaker_metacritic_threshold: int = 5
@@ -51,8 +53,17 @@ class Settings(BaseSettings):
     breaker_probe_seconds: float = 60.0
 
     session_ttl_hours: int = 12
+    # Неудачные попытки с одного IP под одним логином, после них вход с этого IP закрыт на окно
     login_max_attempts: int = 5
     login_window_minutes: int = 15
+    # Под одним логином с любых адресов: после стольких неудач каждая следующая попытка
+    # ждёт всё дольше, до LOGIN_DELAY_MAX_SECONDS. Это задержка, а не блокировка
+    login_delay_after: int = 5
+    login_delay_max_seconds: int = 60
+    # На каждой такой по счёту неудаче подряд в журнал пишется предупреждение
+    login_alert_threshold: int = 10
+    # Второй фактор TOTP для администраторов, по умолчанию обязателен в prod
+    admin_totp_required: bool | None = None
 
     rate_limit_catalog_per_minute: int = 120
     rate_limit_api_per_minute: int = 120
@@ -96,6 +107,10 @@ class Settings(BaseSettings):
     @property
     def is_prod(self) -> bool:
         return self.env == "prod"
+
+    @property
+    def totp_required_for_admins(self) -> bool:
+        return self.is_prod if self.admin_totp_required is None else self.admin_totp_required
 
     @property
     def tz(self) -> ZoneInfo:

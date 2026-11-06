@@ -8,14 +8,16 @@ from app.auth import service as auth_module
 from app.auth.models import LoginAttempt, User, UserSession
 from app.auth.service import csrf_token_for, token_hash
 from app.core.clock import now_tz
+from app.core.config import settings
 from app.web.app import app
 from app.web.deps import SESSION_COOKIE
 from app.web.routes.admin import monitor_events
 from tests.conftest import ORIGIN, PASSWORD, create_user, login_as
 
 
-async def post_login(client, login, password=PASSWORD, next="/monitor"):
-    return await client.post("/login", data={"login": login, "password": password, "next": next})
+async def post_login(client, login, password=PASSWORD, next="/monitor", code=""):
+    data = {"login": login, "password": password, "next": next, "code": code}
+    return await client.post("/login", data=data)
 
 
 async def count(session_factory, model) -> int:
@@ -61,7 +63,7 @@ async def test_wrong_password_and_unknown_login_look_the_same(
         unknown = await post_login(client, "nobody", "wrong password!!")
 
     assert wrong.status_code == unknown.status_code == 401
-    assert "Неверный логин или пароль" in wrong.text
+    assert "Неверный логин, пароль или код" in wrong.text
     assert wrong.text == unknown.text
     assert len(verified) == 2
     assert verified[1] == auth_module._DUMMY_HASH
@@ -73,7 +75,10 @@ async def test_inactive_user_cannot_login(make_client, session_factory) -> None:
         assert (await post_login(client, "admin")).status_code == 401
 
 
-async def test_login_rate_limited_per_ip_and_login(make_client, session_factory) -> None:
+async def test_login_rate_limited_per_ip_and_login(
+    make_client, session_factory, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "login_delay_after", 100)
     await create_user(session_factory, "admin")
     async with make_client(ip="10.0.0.1") as client:
         for _ in range(5):
@@ -244,3 +249,117 @@ async def test_stream_closes_when_session_revoked(session_factory) -> None:
     ]
 
     assert [e.split("\n", 1)[0] for e in events] == ["event: update", "event: logout"]
+
+
+# Задержка по логину, серии неудач, второй фактор
+
+
+async def age_attempts(session_factory, seconds: int) -> None:
+    async with session_factory() as db, db.begin():
+        await db.execute(
+            update(LoginAttempt).values(
+                attempted_at=LoginAttempt.attempted_at - timedelta(seconds=seconds)
+            )
+        )
+
+
+async def test_login_delay_grows_per_login_across_ips(
+    make_client, session_factory, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "login_delay_after", 3)
+    await create_user(session_factory, "admin")
+    for n in range(3):
+        async with make_client(ip=f"10.1.0.{n}") as bot:
+            assert (await post_login(bot, "admin", "bad password!!")).status_code == 401
+
+    async with make_client(ip="10.9.9.9") as other:
+        delayed = await post_login(other, "admin")
+        await age_attempts(session_factory, 3)
+        allowed = await post_login(other, "admin")
+
+    assert delayed.status_code == 429
+    assert "повторите через 2 с" in delayed.text
+    assert allowed.status_code == 303
+    # Отклонённая из-за задержки попытка не записана и задержку не растит
+    assert await count(session_factory, LoginAttempt) == 3
+
+
+async def test_login_delay_applies_to_unknown_login_too(
+    make_client, session_factory, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "login_delay_after", 2)
+    async with make_client() as client:
+        for _ in range(2):
+            await post_login(client, "nobody", "bad password!!")
+        assert (await post_login(client, "nobody")).status_code == 429
+
+
+async def test_failed_series_logged_and_shown_in_monitor(
+    make_client, session_factory, monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(settings, "login_delay_after", 100)
+    monkeypatch.setattr(settings, "login_alert_threshold", 3)
+    await create_user(session_factory, "boss")
+    for n in range(3):
+        async with make_client(ip=f"10.2.0.{n}") as bot:
+            await post_login(bot, "boss", "bad password!!")
+
+    assert "логин 'boss', 3 попыток с 3 адресов" in caplog.text
+    async with make_client("admin") as admin:
+        page = await admin.get("/monitor")
+    assert "Неудачные входы за сутки" in page.text
+    assert "boss" in page.text
+
+
+async def enable_totp(session_factory, user_id: int) -> str:
+    from app.auth import totp
+
+    secret = totp.new_secret()
+    async with session_factory() as db, db.begin():
+        await db.execute(update(User).where(User.id == user_id).values(totp_secret=secret))
+    return secret
+
+
+async def test_totp_required_when_enabled_and_code_single_use(make_client, session_factory) -> None:
+    from app.auth import totp
+
+    user_id = await create_user(session_factory, "admin")
+    secret = await enable_totp(session_factory, user_id)
+    code = totp.code_at(secret, totp.current_step())
+
+    async with make_client() as client:
+        without = await post_login(client, "admin")
+        wrong = await post_login(client, "admin", code="000000" if code != "000000" else "111111")
+        ok = await post_login(client, "admin", code=code)
+    async with make_client(ip="10.3.0.1") as replay:
+        reused = await post_login(replay, "admin", code=code)
+
+    assert (without.status_code, wrong.status_code, ok.status_code) == (401, 401, 303)
+    assert reused.status_code == 401
+    assert "Неверный логин, пароль или код" in without.text
+
+
+async def test_admin_without_totp_blocked_when_required(
+    make_client, session_factory, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "admin_totp_required", True)
+    await create_user(session_factory, "admin")
+    await create_user(session_factory, "viewer", role="viewer")
+    async with make_client() as client:
+        admin = await post_login(client, "admin")
+        bad = await post_login(client, "admin", "bad password!!")
+        viewer = await post_login(client, "viewer")
+
+    assert admin.status_code == 403
+    assert "python -m app users totp admin" in admin.text
+    assert bad.status_code == 401
+    assert viewer.status_code == 303
+    assert await count(session_factory, UserSession) == 1
+
+
+def test_totp_required_in_prod_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "admin_totp_required", None)
+    monkeypatch.setattr(settings, "env", "prod")
+    assert settings.totp_required_for_admins
+    monkeypatch.setattr(settings, "env", "dev")
+    assert not settings.totp_required_for_admins

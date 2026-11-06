@@ -4,7 +4,9 @@ import asyncio
 import contextlib
 import logging
 import signal
+from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
@@ -13,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import settings
 from app.core.db import SessionLocal, asyncpg_dsn, engine
 from app.crawler.breakers import Breakers
-from app.crawler.heartbeat import beat, cleanup_heartbeats
+from app.crawler.heartbeat import beat, cleanup_heartbeats, live_workers
 from app.crawler.models import Run, RunStatus, RunTrigger
 from app.crawler.reparse import ReparseReport, refresh_derived, reparse_games
 from app.crawler.retention import CleanupReport, cleanup
@@ -105,6 +107,8 @@ class Worker:
         else:
             task = None
         await beat(self.session_factory, self.worker_id, status, task)
+        if settings.worker_health_file:
+            await asyncio.to_thread(Path(settings.worker_health_file).touch)
 
     async def schedule_collect(self) -> None:
         async with self.session_factory() as session, session.begin():
@@ -213,17 +217,34 @@ async def wait_for_run(
         await asyncio.sleep(0.5)
 
 
-async def crawl_once() -> int | None:
-    """Один проход прямо сейчас: ставит collect и обрабатывает очередь в этом процессе"""
-    async with SessionLocal() as session, session.begin():
+@dataclass
+class CrawlOutcome:
+    run_id: int | None
+    # Живые воркеры, которым отдан проход; пусто, если он шёл в этом процессе
+    delegated_to: list[str] = field(default_factory=list)
+    already_running: bool = False
+
+
+async def crawl_once(
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+    client_factory=MetacriticClient,
+) -> CrawlOutcome:
+    """Один проход прямо сейчас. Если работает воркер, collect ставится ему и команда ждёт
+    конца прохода: второй обработчик в этом процессе удвоил бы частоту запросов к Metacritic
+    """
+    session_factory = session_factory or SessionLocal
+    async with session_factory() as session, session.begin():
+        workers = await live_workers(session)
         collect_id = await enqueue_collect(session, RunTrigger.MANUAL)
     if collect_id is None:
-        return None
-    async with MetacriticClient() as client:
-        worker = Worker(build_stages(client), SessionLocal, f"{settings.worker_identity}:crawl")
+        return CrawlOutcome(None, workers, already_running=True)
+    if workers:
+        return CrawlOutcome(await wait_for_run(session_factory, collect_id), workers)
+    async with client_factory() as client:
+        worker = Worker(build_stages(client), session_factory, f"{settings.worker_identity}:crawl")
         task = asyncio.create_task(worker.run(schedule=False))
         try:
-            return await wait_for_run(SessionLocal, collect_id)
+            return CrawlOutcome(await wait_for_run(session_factory, collect_id))
         finally:
             worker.stop.set()
             await task

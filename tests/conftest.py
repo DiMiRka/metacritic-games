@@ -27,6 +27,7 @@ from app.auth.service import create_session, csrf_token_for, hash_password
 from app.catalog.models import EMBEDDING_DIM, ReviewSource
 from app.core.config import settings
 from app.core.db import get_session, get_session_factory
+from app.core.db_roles import create_functions
 from app.core.models import Base
 from app.enrichment.llm import ReviewDigest, Summary
 from app.web.app import app
@@ -74,6 +75,7 @@ async def db_engine() -> AsyncIterator[AsyncEngine]:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+        await create_functions(conn)
     yield engine
     await engine.dispose()
 

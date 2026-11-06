@@ -1,10 +1,26 @@
 from datetime import timedelta
 
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.crawler.models import WorkerHeartbeat
+from app.crawler.models import WorkerHeartbeat, WorkerStatus
+
+# Сигнал раз в 15 секунд: три пропущенных подряд, и экземпляр считается неживым
+WORKER_STALE_SECONDS = 45
+
+
+async def live_workers(session: AsyncSession) -> list[str]:
+    """Экземпляры воркера, которые недавно подавали сигнал и не остановлены"""
+    rows = await session.scalars(
+        select(WorkerHeartbeat.worker)
+        .where(
+            WorkerHeartbeat.updated_at >= func.now() - timedelta(seconds=WORKER_STALE_SECONDS),
+            WorkerHeartbeat.status != WorkerStatus.STOPPED,
+        )
+        .order_by(WorkerHeartbeat.worker)
+    )
+    return list(rows)
 
 
 async def beat(

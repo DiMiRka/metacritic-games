@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from app.auth import cli as users_cli
 from app.auth import service as auth_module
 from app.auth.models import User, UserSession
-from tests.conftest import PASSWORD, login_as
+from tests.conftest import PASSWORD, create_user, login_as
 
 
 async def count(session_factory, model) -> int:
@@ -39,6 +39,37 @@ async def test_cli_create_admin_and_set_password(monkeypatch, session_factory) -
         assert user.role == "admin"
         assert user.password_hash.startswith("$argon2")
         assert await auth_module.authenticate(db, "root", new_password) is not None
+    assert await count(session_factory, UserSession) == 0
+
+
+async def test_cli_totp_enable_requires_valid_code(monkeypatch, session_factory, capsys) -> None:
+    from app.auth import totp
+
+    user_id = await create_user(session_factory, "root")
+    await login_as(session_factory, user_id)
+    monkeypatch.setattr(users_cli, "SessionLocal", session_factory)
+
+    monkeypatch.setattr(users_cli, "ask_code", lambda: "000000")
+    monkeypatch.setattr(totp, "match_step", lambda *a, **k: None)
+    with pytest.raises(SystemExit):
+        await users_cli.enable_totp("root")
+    monkeypatch.undo()
+
+    def answer() -> str:
+        secret = capsys.readouterr().out.split("Ключ: ")[-1].split()[0]
+        return totp.code_at(secret, totp.current_step())
+
+    monkeypatch.setattr(users_cli, "SessionLocal", session_factory)
+    monkeypatch.setattr(users_cli, "ask_code", answer)
+    await users_cli.enable_totp("root")
+    async with session_factory() as db:
+        user = await db.get(User, user_id)
+    assert user.totp_secret and user.totp_last_step
+
+    await users_cli.disable_totp("root")
+    async with session_factory() as db:
+        user = await db.get(User, user_id)
+    assert user.totp_secret is None
     assert await count(session_factory, UserSession) == 0
 
 

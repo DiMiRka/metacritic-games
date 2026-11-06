@@ -130,6 +130,19 @@
 </div>
 
 <section class="panel">
+  <h2>Неудачные входы за сутки</h2>
+  {% for f in m.failed_logins %}
+    <div class="error-row">
+      <span class="muted small">последняя {{ f.last_at | local_time }} · адресов: {{ f.ips }}</span>
+      <span>{{ f.login }}</span>
+      <span class="badge {% if f.attempts >= 10 %}badge--failed{% else %}badge--warn{% endif %}">{{ f.attempts }}</span>
+    </div>
+  {% else %}
+    <p class="muted">Неудачных входов не было</p>
+  {% endfor %}
+</section>
+
+<section class="panel">
   <h2>Последние ошибки этапов</h2>
   {% for e in m.errors %}
     <div class="error-row">

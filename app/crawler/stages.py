@@ -69,6 +69,13 @@ async def enqueue_collect(
     )
 
 
+async def request_manual_collect(session: AsyncSession, user_id: int) -> int | None:
+    """Ручной запуск с сайта через функцию request_manual_collect: прав на запись в jobs
+    у сайта нет. None, если collect уже в очереди или не прошла пауза между запусками
+    """
+    return await session.scalar(select(func.request_manual_collect(user_id)))
+
+
 async def collect_active(session: AsyncSession) -> bool:
     """collect уже в очереди или выполняется"""
     count = await session.scalar(

@@ -1,4 +1,5 @@
-"""Очистка старых служебных данных: задачи, проходы с их записями, сырые ответы.
+"""Очистка старых служебных данных: задачи, проходы с их записями, сырые ответы,
+просроченные сессии и старые попытки входа.
 
 Удаление пачками, каждая в своей транзакции: длинных блокировок нет. Каталог, резюме и история
 оценок не трогаются: это данные сервиса, история хранит только изменения и растёт медленно
@@ -8,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import Select, delete, exists, func, select, tuple_
+from sqlalchemy import Select, delete, exists, func, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
@@ -27,6 +28,8 @@ class CleanupReport:
     runs: int = 0
     crawl_states: int = 0
     raw_pages: int = 0
+    sessions: int = 0
+    login_attempts: int = 0
 
 
 async def _delete_chunked(
@@ -89,6 +92,11 @@ async def cleanup(
                 delete(CrawlState).where(CrawlState.day < func.current_date() - days)
             )
             report.crawl_states = result.rowcount
+
+    # Прав на sessions и login_attempts у воркера нет, только на эту функцию
+    async with session_factory() as session, session.begin():
+        purged = (await session.execute(select(text("* FROM purge_auth_records()")))).one()
+    report.sessions, report.login_attempts = purged
 
     if raw_days > 0:
         report.raw_pages = await _delete_chunked(

@@ -201,12 +201,7 @@ async def reap_expired(session: AsyncSession) -> int:
 
 
 async def retry_dead(session: AsyncSession, job_id: int) -> bool:
-    """Ручной повтор dead-задачи с чистым счётчиком попыток"""
-    result = await session.execute(
-        update(Job)
-        .where(Job.id == job_id, Job.status == JobStatus.DEAD)
-        .values(status=JobStatus.QUEUED, attempts=0, run_after=func.now(), finished_at=None)
-    )
-    if result.rowcount == 1:
-        await notify(session, "retry")
-    return result.rowcount == 1
+    """Ручной повтор dead-задачи с чистым счётчиком попыток.
+    Через функцию retry_dead_job: прав на запись в jobs у сайта нет
+    """
+    return bool(await session.scalar(select(func.retry_dead_job(job_id))))

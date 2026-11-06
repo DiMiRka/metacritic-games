@@ -2,22 +2,31 @@
 
 import hashlib
 import hmac
+import logging
+import math
 import secrets
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
+from enum import StrEnum
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, distinct, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import totp
 from app.auth.models import LoginAttempt, User, UserRole, UserSession
 from app.core.clock import now_tz
 from app.core.config import settings
 
+log = logging.getLogger(__name__)
+
 MIN_PASSWORD_LENGTH = 12
 LOGIN_MAX_LENGTH = 100
 SESSION_TOUCH_SECONDS = 60
+# Попытки хранятся не меньше суток: по ним монитор показывает серии неудачных входов
+ATTEMPTS_KEEP = timedelta(days=1)
+DELAY_BASE_SECONDS = 2
 
 _hasher = PasswordHasher()
 # Хеш-заглушка: если логина нет, всё равно считаем argon2, чтобы время ответа не выдавало его
@@ -100,10 +109,106 @@ async def too_many_attempts(db: AsyncSession, ip: str, login: str) -> bool:
     return count >= settings.login_max_attempts
 
 
+def _window() -> timedelta:
+    return timedelta(minutes=settings.login_window_minutes)
+
+
+async def login_delay(db: AsyncSession, login: str) -> int:
+    """Сколько секунд ждать до следующей попытки под этим логином, с какого адреса ни войди.
+    Отклонённые из-за задержки попытки не записываются: растянуть её дальше нельзя
+    """
+    count, last, now = (
+        await db.execute(
+            select(func.count(), func.max(LoginAttempt.attempted_at), func.now()).where(
+                LoginAttempt.login == normalize_login(login),
+                LoginAttempt.attempted_at >= func.now() - _window(),
+            )
+        )
+    ).one()
+    if count < settings.login_delay_after:
+        return 0
+    power = min(count - settings.login_delay_after, 20)
+    delay = min(DELAY_BASE_SECONDS * 2**power, settings.login_delay_max_seconds)
+    return max(0, math.ceil((last + timedelta(seconds=delay) - now).total_seconds()))
+
+
 async def record_failed_attempt(db: AsyncSession, ip: str, login: str) -> None:
-    since = now_tz() - timedelta(minutes=settings.login_window_minutes)
-    await db.execute(delete(LoginAttempt).where(LoginAttempt.attempted_at < since))
-    db.add(LoginAttempt(ip=ip, login=normalize_login(login)))
+    login = normalize_login(login)
+    keep = max(_window(), ATTEMPTS_KEEP)
+    await db.execute(delete(LoginAttempt).where(LoginAttempt.attempted_at < func.now() - keep))
+    db.add(LoginAttempt(ip=ip, login=login))
+    await db.flush()
+    count, ips = (
+        await db.execute(
+            select(func.count(), func.count(distinct(LoginAttempt.ip))).where(
+                LoginAttempt.login == login, LoginAttempt.attempted_at >= func.now() - _window()
+            )
+        )
+    ).one()
+    if count % settings.login_alert_threshold == 0:
+        log.warning(
+            "серия неудачных входов: логин %r, %d попыток с %d адресов за %d мин",
+            login,
+            count,
+            ips,
+            settings.login_window_minutes,
+        )
+
+
+@dataclass(frozen=True)
+class FailedLogins:
+    login: str
+    attempts: int
+    ips: int
+    last_at: datetime
+
+
+async def failed_login_series(db: AsyncSession, limit: int = 10) -> list[FailedLogins]:
+    """Логины с неудачными попытками за сутки, больше всего попыток сверху"""
+    rows = await db.execute(
+        select(
+            LoginAttempt.login,
+            func.count(),
+            func.count(distinct(LoginAttempt.ip)),
+            func.max(LoginAttempt.attempted_at),
+        )
+        .where(LoginAttempt.attempted_at >= func.now() - ATTEMPTS_KEEP)
+        .group_by(LoginAttempt.login)
+        .order_by(func.count().desc(), LoginAttempt.login)
+        .limit(limit)
+    )
+    return [FailedLogins(*row) for row in rows]
+
+
+class SecondFactor(StrEnum):
+    OK = "ok"
+    INVALID = "invalid"
+    SETUP_REQUIRED = "setup_required"
+
+
+async def check_second_factor(db: AsyncSession, user: User, code: str) -> SecondFactor:
+    """Код TOTP, если он включён. Админу без TOTP вход закрыт, когда второй фактор обязателен"""
+    if not user.totp_secret:
+        if user.role == UserRole.ADMIN and settings.totp_required_for_admins:
+            return SecondFactor.SETUP_REQUIRED
+        return SecondFactor.OK
+    step = totp.match_step(user.totp_secret, code, last_step=user.totp_last_step)
+    if step is None:
+        return SecondFactor.INVALID
+    # Условие в UPDATE: из двух одновременных входов с одним кодом пройдёт только один
+    result = await db.execute(
+        update(User)
+        .where(
+            User.id == user.id,
+            or_(User.totp_last_step.is_(None), User.totp_last_step < step),
+        )
+        .values(totp_last_step=step)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        return SecondFactor.INVALID
+    user.totp_last_step = step
+    return SecondFactor.OK
 
 
 async def clear_attempts(db: AsyncSession, ip: str, login: str) -> None:

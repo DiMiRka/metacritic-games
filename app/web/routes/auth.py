@@ -5,9 +5,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from app.auth.service import (
     AuthContext,
+    SecondFactor,
     authenticate,
+    check_second_factor,
     clear_attempts,
     create_session,
+    login_delay,
+    normalize_login,
     record_failed_attempt,
     revoke_session,
     safe_next,
@@ -18,7 +22,7 @@ from app.web.deps import SESSION_COOKIE, Session, check_csrf, load_auth, session
 from app.web.middleware.ratelimit import login_limit
 from app.web.templating import templates
 
-INVALID_CREDENTIALS = "Неверный логин или пароль"
+INVALID_CREDENTIALS = "Неверный логин, пароль или код"
 
 router = APIRouter()
 limited = [Depends(login_limit)]
@@ -53,19 +57,32 @@ async def login(
     db: Session,
     login: Annotated[str, Form(max_length=200)] = "",
     password: Annotated[str, Form(max_length=1000)] = "",
+    code: Annotated[str, Form(max_length=20)] = "",
     next: Annotated[str, Form(max_length=2000)] = "/",
 ) -> Response:
     target = safe_next(next)
     ip = client_ip(request)
+    # Задержка считается и для несуществующих логинов: по ней нельзя узнать, есть ли логин
+    if wait := await login_delay(db, login):
+        message = f"Много неудачных попыток под этим логином, повторите через {wait} с"
+        return render_login(request, target, message, status=429)
     if await too_many_attempts(db, ip, login):
         message = f"Слишком много попыток, попробуйте через {settings.login_window_minutes} мин"
         return render_login(request, target, message, status=429)
 
     user = await authenticate(db, login, password)
-    if user is None:
+    factor = await check_second_factor(db, user, code) if user else SecondFactor.INVALID
+    if factor is SecondFactor.INVALID:
         await record_failed_attempt(db, ip, login)
         await db.commit()
         return render_login(request, target, INVALID_CREDENTIALS, status=401)
+    if factor is SecondFactor.SETUP_REQUIRED:
+        await db.rollback()
+        message = (
+            "Администратору нужен второй фактор. Включите его на сервере: "
+            f"python -m app users totp {normalize_login(login)}"
+        )
+        return render_login(request, target, message, status=403)
 
     await clear_attempts(db, ip, login)
     if old_token := session_token(request):

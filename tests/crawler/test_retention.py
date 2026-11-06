@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from sqlalchemy import func, select, update
 
+from app.auth.models import LoginAttempt, User, UserSession
 from app.catalog.models import Game
 from app.crawler import retention
 from app.crawler.models import CrawlState, RawPage, Run, RunItem
@@ -50,6 +51,19 @@ async def seed(session_factory) -> dict[str, int]:
                 .where(RawPage.id == page.id)
                 .values(last_seen_at=func.now() - timedelta(days=age))
             )
+        user = User(login="u", password_hash="h", role="viewer")
+        session.add(user)
+        await session.flush()
+        session.add_all(
+            [
+                UserSession(user_id=user.id, token_hash="old", expires_at=OLD),
+                UserSession(
+                    user_id=user.id, token_hash="live", expires_at=func.now() + timedelta(hours=1)
+                ),
+                LoginAttempt(ip="1.1.1.1", login="u", attempted_at=OLD),
+                LoginAttempt(ip="1.1.1.1", login="u"),
+            ]
+        )
         return {"game": game.id, "running": running.id, "fresh_run": fresh_run.id}
 
 
@@ -60,6 +74,7 @@ async def test_cleanup_keeps_active_and_recent(session_factory, monkeypatch) -> 
     report = await cleanup(session_factory, retention_days=30, raw_retention_days=90)
 
     assert (report.jobs, report.runs, report.crawl_states, report.raw_pages) == (1, 1, 1, 2)
+    assert (report.sessions, report.login_attempts) == (1, 1)
     async with session_factory() as session:
         runs = set((await session.scalars(select(Run.id))).all())
         jobs = (await session.scalars(select(Job.status).order_by(Job.id))).all()

@@ -27,6 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     actions.add_parser("set-password", help="сменить пароль и завершить сессии").add_argument(
         "login"
     )
+    actions.add_parser("totp", help="включить второй фактор TOTP").add_argument("login")
+    actions.add_parser("totp-off", help="выключить второй фактор TOTP").add_argument("login")
     return parser
 
 
@@ -40,8 +42,14 @@ async def run(args: argparse.Namespace) -> None:
         elif args.command == "crawl":
             from app.worker.main import crawl_once
 
-            run_id = await crawl_once()
-            print("Проход уже идёт" if run_id is None else f"Проход {run_id} завершён")
+            outcome = await crawl_once()
+            if outcome.already_running:
+                print("Проход уже идёт")
+            else:
+                where = (
+                    f" воркером {', '.join(outcome.delegated_to)}" if outcome.delegated_to else ""
+                )
+                print(f"Проход {outcome.run_id} завершён{where}")
         elif args.command == "reparse":
             from app.worker.main import reparse
 
@@ -64,17 +72,23 @@ async def run(args: argparse.Namespace) -> None:
             r = await cleanup_now()
             print(
                 f"Удалено: задач {r.jobs}, проходов {r.runs}, курсоров {r.crawl_states}, "
-                f"сырых ответов {r.raw_pages}"
+                f"сырых ответов {r.raw_pages}, сессий {r.sessions}, "
+                f"попыток входа {r.login_attempts}"
             )
         elif args.command == "db-roles":
             from app.core.db_roles import setup_roles
 
             await setup_roles()
         elif args.command == "users":
-            from app.auth.cli import create_admin, set_password
+            from app.auth.cli import create_admin, disable_totp, enable_totp, set_password
 
-            action = create_admin if args.action == "create-admin" else set_password
-            await action(args.login)
+            actions = {
+                "create-admin": create_admin,
+                "set-password": set_password,
+                "totp": enable_totp,
+                "totp-off": disable_totp,
+            }
+            await actions[args.action](args.login)
     finally:
         await engine.dispose()
 

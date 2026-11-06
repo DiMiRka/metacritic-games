@@ -1,8 +1,11 @@
+import asyncio
+import logging
 from typing import Annotated, get_args
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from sqlalchemy import text
 
 from app.catalog.queries import (
     GameFilters,
@@ -25,6 +28,10 @@ SORT_LABELS = {
     "userscore": "По оценке игроков",
     "title": "По названию",
 }
+
+log = logging.getLogger(__name__)
+
+HEALTH_DB_TIMEOUT = 3.0
 
 router = APIRouter(dependencies=[Depends(load_auth)])
 
@@ -54,8 +61,14 @@ def page_url(filters: GameFilters, page: int) -> str:
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health(session: Session) -> JSONResponse:
+    """Готовность: процесс жив и база отвечает. По нему healthcheck в compose и Caddy"""
+    try:
+        await asyncio.wait_for(session.execute(text("SELECT 1")), HEALTH_DB_TIMEOUT)
+    except Exception as exc:
+        log.warning("health: база недоступна: %r", exc)
+        return JSONResponse({"status": "unavailable", "db": "error"}, status_code=503)
+    return JSONResponse({"status": "ok", "db": "ok"})
 
 
 @router.get("/", response_class=HTMLResponse, dependencies=[Depends(catalog_limit)])

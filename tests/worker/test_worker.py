@@ -98,3 +98,45 @@ def test_worker_identity_default(monkeypatch) -> None:
     assert ":" in settings.worker_identity
     monkeypatch.setattr(settings, "worker_id", "worker-1")
     assert settings.worker_identity == "worker-1"
+
+
+async def test_crawl_once_delegates_to_live_worker(session_factory, monkeypatch) -> None:
+    from app.worker import main
+
+    async with session_factory() as session, session.begin():
+        session.add(WorkerHeartbeat(worker="main-worker", status="idle"))
+        session.add(WorkerHeartbeat(worker="gone", status="stopped"))
+    waited: list[int] = []
+
+    async def fake_wait(factory, collect_id: int) -> int:
+        waited.append(collect_id)
+        return 7
+
+    def no_local_client():
+        raise AssertionError("второй обработчик запускаться не должен")
+
+    monkeypatch.setattr(main, "wait_for_run", fake_wait)
+    outcome = await main.crawl_once(session_factory, client_factory=no_local_client)
+
+    assert (outcome.run_id, outcome.delegated_to) == (7, ["main-worker"])
+    async with session_factory() as session:
+        job = await session.get(Job, waited[0])
+    assert (job.kind, job.payload["trigger"]) == ("collect", "manual")
+
+
+async def test_crawl_once_reports_already_running(session_factory) -> None:
+    from app.crawler.stages import enqueue_collect
+    from app.worker import main
+
+    async with session_factory() as session, session.begin():
+        await enqueue_collect(session, "schedule")
+    outcome = await main.crawl_once(session_factory)
+    assert outcome.already_running
+
+
+async def test_heartbeat_touches_health_file(db_engine, session_factory, monkeypatch, tmp_path):
+    health = tmp_path / "alive"
+    monkeypatch.setattr(settings, "worker_health_file", str(health))
+    worker = make_worker(db_engine, session_factory, "w-health")
+    await worker.heartbeat("idle")
+    assert health.exists()

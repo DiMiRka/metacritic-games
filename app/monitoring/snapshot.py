@@ -6,14 +6,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
+from app.auth.service import failed_login_series
 from app.catalog.models import Game, ReviewSummary
 from app.core.clock import day_bounds, now_tz
 from app.core.config import settings
+from app.crawler.heartbeat import WORKER_STALE_SECONDS, live_workers
 from app.crawler.models import CrawlState, Run, RunItem, RunStatus, WorkerHeartbeat
 from app.crawler.runs import run_stats
 from app.jobs.models import ACTIVE_STATUSES, Breaker, Job, JobKind, JobStatus
 
-WORKER_STALE_SECONDS = 45
 RECENT_RUNS = 10
 RECENT_ERRORS = 10
 RECENT_DEAD = 10
@@ -49,6 +50,13 @@ class ErrorOut(BaseModel):
     stage: str
     status: str
     error: str
+
+
+class FailedLoginOut(BaseModel):
+    login: str
+    attempts: int
+    ips: int
+    last_at: datetime
 
 
 class QueueRow(BaseModel):
@@ -103,18 +111,13 @@ class MonitorSnapshot(BaseModel):
     expired: list[JobOut]
     dead: list[JobOut]
     breakers: list[BreakerOut]
+    failed_logins: list[FailedLoginOut]
     counters: Counters
 
 
-async def worker_alive(session: AsyncSession, now: datetime | None = None) -> bool:
+async def worker_alive(session: AsyncSession) -> bool:
     """Есть ли хотя бы один живой экземпляр воркера"""
-    fresh = (now or now_tz()) - timedelta(seconds=WORKER_STALE_SECONDS)
-    count = await session.scalar(
-        select(func.count())
-        .select_from(WorkerHeartbeat)
-        .where(WorkerHeartbeat.updated_at >= fresh, WorkerHeartbeat.status != "stopped")
-    )
-    return bool(count)
+    return bool(await live_workers(session))
 
 
 async def _runs(session: AsyncSession, now: datetime) -> list[RunOut]:
@@ -280,6 +283,10 @@ async def snapshot(session: AsyncSession, now: datetime | None = None) -> Monito
         breakers=[
             BreakerOut.model_validate(b, from_attributes=True)
             for b in (await session.scalars(select(Breaker).order_by(Breaker.name))).all()
+        ],
+        failed_logins=[
+            FailedLoginOut.model_validate(f, from_attributes=True)
+            for f in await failed_login_series(session)
         ],
         counters=Counters(
             **await _llm_usage(session, day_start),
