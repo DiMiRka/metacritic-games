@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.models import User
 from app.catalog.models import Game, ReviewSummary
 from app.core.clock import day_bounds, now_tz
+from app.core.config import settings
 from app.crawler.models import CrawlState, Run, RunItem, RunStatus, WorkerHeartbeat
 from app.crawler.runs import run_stats
 from app.jobs.models import ACTIVE_STATUSES, Breaker, Job, JobKind, JobStatus
@@ -35,6 +36,7 @@ class RunOut(BaseModel):
     processed: int
     created: int
     updated: int
+    unchanged: int
     errors_count: int
     duration_seconds: float | None
     requested_by: str | None
@@ -79,6 +81,10 @@ class Counters(BaseModel):
     games_total: int
     processed_today: int
     summaries_total: int
+    # Токены резюме, пересчитанных сегодня, и оценка стоимости по ценам из настроек
+    llm_input_tokens_today: int
+    llm_output_tokens_today: int
+    llm_cost_today: float | None
     embeddings_total: int
     runs_today: int
     errors_today: int
@@ -133,6 +139,7 @@ async def _runs(session: AsyncSession, now: datetime) -> list[RunOut]:
                 processed=s.processed if s else 0,
                 created=s.created if s else 0,
                 updated=s.updated if s else 0,
+                unchanged=s.unchanged if s else 0,
                 errors_count=s.failed if s else 0,
                 duration_seconds=(end - run.started_at).total_seconds() if end else None,
                 requested_by=logins.get(run.requested_by) if run.requested_by else None,
@@ -153,8 +160,31 @@ async def _queue(session: AsyncSession) -> list[QueueRow]:
     return list(by_kind.values())
 
 
+async def _llm_usage(session: AsyncSession, day_start: datetime) -> dict[str, Any]:
+    tokens_in, tokens_out = (
+        await session.execute(
+            select(
+                func.coalesce(func.sum(ReviewSummary.input_tokens), 0),
+                func.coalesce(func.sum(ReviewSummary.output_tokens), 0),
+            ).where(ReviewSummary.generated_at >= day_start)
+        )
+    ).one()
+    return {
+        "llm_input_tokens_today": tokens_in,
+        "llm_output_tokens_today": tokens_out,
+        "llm_cost_today": llm_cost(tokens_in, tokens_out),
+    }
+
+
 def _job_out(job: Job) -> JobOut:
     return JobOut.model_validate(job, from_attributes=True)
+
+
+def llm_cost(input_tokens: int, output_tokens: int) -> float | None:
+    price_in, price_out = settings.llm_price_input_per_mtok, settings.llm_price_output_per_mtok
+    if not (price_in or price_out):
+        return None
+    return (input_tokens * price_in + output_tokens * price_out) / 1_000_000
 
 
 async def snapshot(session: AsyncSession, now: datetime | None = None) -> MonitorSnapshot:
@@ -252,6 +282,7 @@ async def snapshot(session: AsyncSession, now: datetime | None = None) -> Monito
             for b in (await session.scalars(select(Breaker).order_by(Breaker.name))).all()
         ],
         counters=Counters(
+            **await _llm_usage(session, day_start),
             games_total=games_total,
             processed_today=processed_today,
             summaries_total=await session.scalar(select(func.count()).select_from(ReviewSummary)),

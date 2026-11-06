@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     crawl_interval_minutes: int = 60
     crawl_on_start: bool = True
     manual_run_cooldown_minutes: int = 10
+    # Хранение служебных данных в днях, 0: не чистить. Последний сырой ответ игры хранится всегда
+    retention_days: int = 30
+    raw_retention_days: int = 90
+    cleanup_hour: int = 4
 
     # Очередь задач
     worker_id: str = ""
@@ -65,6 +69,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     llm_api_key: str = ""
     llm_base_url: str = ""
+    # Цена модели резюме в $ за миллион токенов, 0: монитор не показывает стоимость
+    llm_price_input_per_mtok: float = 0
+    llm_price_output_per_mtok: float = 0
     youtube_api_key: str = ""
 
     embedding_model: str = "BAAI/bge-small-en-v1.5"

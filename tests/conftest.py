@@ -28,7 +28,7 @@ from app.catalog.models import EMBEDDING_DIM, ReviewSource
 from app.core.config import settings
 from app.core.db import get_session, get_session_factory
 from app.core.models import Base
-from app.enrichment.llm import ReviewDigest
+from app.enrichment.llm import ReviewDigest, Summary
 from app.web.app import app
 from app.web.deps import SESSION_COOKIE
 from app.web.middleware.ratelimit import LIMITERS
@@ -130,17 +130,23 @@ class FakeSummarizer:
         self.fail = fail
         self.calls: list[tuple[str, str, int]] = []
 
-    async def summarize(self, title: str, source: ReviewSource, reviews: list) -> ReviewDigest:
+    async def summarize(self, title: str, source: ReviewSource, reviews: list) -> Summary:
         self.calls.append((title, source, len(reviews)))
         if self.fail:
             raise RuntimeError("LLM недоступна")
-        return ReviewDigest(likes=[f"{source} плюс"], dislikes=[f"{source} минус"])
+        digest = ReviewDigest(likes=[f"{source} плюс"], dislikes=[f"{source} минус"])
+        return Summary(digest, input_tokens=100 * len(reviews), output_tokens=50)
 
 
 class FakeEmbedder:
     """Детерминированный вектор: одинаковый текст даёт одинаковый эмбеддинг"""
 
+    def __init__(self, model: str = "fake-embed") -> None:
+        self.model = model
+        self.calls = 0
+
     async def embed(self, text: str) -> list[float]:
+        self.calls += 1
         seed = hashlib.sha256(text.encode()).digest()
         return [seed[i % len(seed)] / 255 + 0.01 for i in range(EMBEDDING_DIM)]
 

@@ -26,6 +26,8 @@ WORKER_TABLES = (
     "jobs",
     "game_reviews",
     "breakers",
+    "raw_pages",
+    "score_history",
 )
 WEB_READ_TABLES = (
     "games",
@@ -37,6 +39,7 @@ WEB_READ_TABLES = (
     "worker_heartbeats",
     "run_items",
     "breakers",
+    "score_history",
 )
 # jobs: сайт ставит collect и повторяет dead-задачи
 WEB_WRITE_TABLES = ("users", "sessions", "login_attempts", "jobs")

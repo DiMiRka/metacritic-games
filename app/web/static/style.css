@@ -237,7 +237,7 @@ h1, h2, h3 { line-height: 1.2; }
 .badge--running { background: var(--accent); }
 .badge--success { background: var(--good); }
 .badge--failed { background: var(--bad); }
-.badge--stale { background: var(--mixed); color: #1c1c1e; }
+.badge--warn { background: var(--mixed); color: #1c1c1e; }
 .badge--partial { background: var(--mixed); color: #1c1c1e; }
 .link-button--accent { color: var(--accent); }
 .error-row { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); }

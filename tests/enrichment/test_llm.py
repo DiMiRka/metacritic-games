@@ -63,7 +63,9 @@ class FakeMessages:
 
 def anthropic_response(text: str, stop_reason: str = "end_turn"):
     return SimpleNamespace(
-        stop_reason=stop_reason, content=[SimpleNamespace(type="text", text=text)]
+        stop_reason=stop_reason,
+        content=[SimpleNamespace(type="text", text=text)],
+        usage=SimpleNamespace(input_tokens=1200, output_tokens=80),
     )
 
 
@@ -72,9 +74,10 @@ async def test_anthropic_summarizer_parses_structured_output() -> None:
     summarizer = AnthropicSummarizer("key", "claude-haiku-5-5", SimpleNamespace(messages=messages))
 
     review = Review("Уникальный текст отзыва", 90, "IGN")
-    digest = await summarizer.summarize("G", ReviewSource.CRITIC, [review])
+    summary = await summarizer.summarize("G", ReviewSource.CRITIC, [review])
 
-    assert digest == ReviewDigest(likes=["мир"], dislikes=["камера"])
+    assert summary.digest == ReviewDigest(likes=["мир"], dislikes=["камера"])
+    assert (summary.input_tokens, summary.output_tokens) == (1200, 80)
     assert messages.kwargs["model"] == "claude-haiku-5-5"
     assert messages.kwargs["output_config"]["format"]["type"] == "json_schema"
     assert review.text not in messages.kwargs["system"]
@@ -88,7 +91,8 @@ class FakeCompletions:
                 SimpleNamespace(
                     finish_reason=finish_reason, message=SimpleNamespace(content=content)
                 )
-            ]
+            ],
+            usage=SimpleNamespace(prompt_tokens=900, completion_tokens=60),
         )
         self.kwargs: dict = {}
 
@@ -108,9 +112,10 @@ async def test_openai_compatible_summarizer() -> None:
     )
     review = Review("Уникальный текст отзыва", 8, None)
 
-    digest = await summarizer.summarize("G", ReviewSource.USER, [review])
+    summary = await summarizer.summarize("G", ReviewSource.USER, [review])
 
-    assert digest == ReviewDigest(likes=["сюжет"], dislikes=[])
+    assert summary.digest == ReviewDigest(likes=["сюжет"], dislikes=[])
+    assert (summary.input_tokens, summary.output_tokens) == (900, 60)
     assert completions.kwargs["model"] == "gemini-3.8-flash"
     assert completions.kwargs["response_format"]["type"] == "json_schema"
     system, user = completions.kwargs["messages"]

@@ -117,3 +117,12 @@ class GameDetailOut(BaseModel):
             updated_at=game.updated_at,
             last_processed_at=game.last_processed_at,
         )
+
+
+class ScorePointOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    platform: str
+    metascore: int | None
+    userscore: float | None
+    observed_at: datetime

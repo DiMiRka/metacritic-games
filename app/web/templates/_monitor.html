@@ -8,6 +8,7 @@
   <div class="stat"><span class="stat__value">{{ c.runs_today }}</span><span class="stat__label">проходов сегодня</span></div>
   <div class="stat{% if c.errors_today %} stat--bad{% endif %}"><span class="stat__value">{{ c.errors_today }}</span><span class="stat__label">ошибок сегодня</span></div>
   <div class="stat"><span class="stat__value">{{ c.summaries_total }}</span><span class="stat__label">резюме отзывов</span></div>
+  <div class="stat"><span class="stat__value">{{ "{:,}".format(c.llm_input_tokens_today + c.llm_output_tokens_today).replace(",", " ") }}</span><span class="stat__label">токенов LLM сегодня{% if c.llm_cost_today is not none %}, ≈ ${{ "%.4f"|format(c.llm_cost_today) }}{% endif %}</span></div>
   <div class="stat"><span class="stat__value">{{ c.embeddings_total }}</span><span class="stat__label">эмбеддингов</span></div>
 </section>
 
@@ -36,7 +37,7 @@
       {% set r = m.current_run %}
       <div>
         <p><strong>#{{ r.id }}</strong> ({% if r.trigger == "manual" %}вручную{% if r.requested_by %}, {{ r.requested_by }}{% endif %}{% else %}по расписанию{% endif %}), идёт {{ r.duration_seconds | duration }}</p>
-        <p class="muted small">игр {{ r.processed }}: новых {{ r.created }}, обновлено {{ r.updated }}, упавших этапов {{ r.errors_count }}</p>
+        <p class="muted small">игр {{ r.processed }}: новых {{ r.created }}, обновлено {{ r.updated }}, без изменений {{ r.unchanged }}, упавших этапов {{ r.errors_count }}</p>
       </div>
     {% else %}
       <p class="muted">{% if m.collect_active %}Сбор кандидатов в очереди{% else %}Сейчас проход не идёт{% endif %}</p>
@@ -54,7 +55,7 @@
   <div class="table-scroll">
     <table class="runs">
       <thead>
-        <tr><th>#</th><th>Старт</th><th>Запуск</th><th>Статус</th><th>Длительность</th><th>Игр</th><th>Новых</th><th>Обновлено</th><th>Упало этапов</th></tr>
+        <tr><th>#</th><th>Старт</th><th>Запуск</th><th>Статус</th><th>Длительность</th><th>Игр</th><th>Новых</th><th>Обновлено</th><th>Без изменений</th><th>Упало этапов</th></tr>
       </thead>
       <tbody>
         {% for r in m.runs %}
@@ -67,6 +68,7 @@
             <td>{{ r.processed }}</td>
             <td>{{ r.created }}</td>
             <td>{{ r.updated }}</td>
+            <td>{{ r.unchanged or "" }}</td>
             <td>{{ r.errors_count or "" }}</td>
           </tr>
         {% endfor %}
@@ -101,12 +103,12 @@
         Автомат {{ b.name }}:
         {% if b.state == "closed" %}<span class="badge badge--success">закрыт</span>
         {% elif b.state == "open" %}<span class="badge badge--failed">открыт</span> до {{ b.opened_until | local_time }}, задачи отложены
-        {% else %}<span class="badge badge--stale">проверка</span> пробная задача в работе{% endif %}
+        {% else %}<span class="badge badge--warn">проверка</span> пробная задача в работе{% endif %}
         {% if b.failures %}<span class="muted">сбоев подряд: {{ b.failures }}</span>{% endif %}
       </p>
     {% endfor %}
     {% if m.expired %}
-      <p class="small"><span class="badge badge--stale">аренда истекла</span>
+      <p class="small"><span class="badge badge--warn">аренда истекла</span>
         {% for j in m.expired %}{{ kinds[j.kind] }} #{{ j.id }} ({{ j.locked_by }}){% if not loop.last %}, {% endif %}{% endfor %}
       </p>
     {% endif %}

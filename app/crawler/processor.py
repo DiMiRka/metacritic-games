@@ -3,11 +3,12 @@
 from datetime import datetime
 
 from sqlalchemy import delete, func, literal_column, select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import distinct_on, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.catalog.models import Game, GamePlatform, GameReview, ReviewSource
+from app.catalog.models import Game, GamePlatform, GameReview, ReviewSource, ScoreHistory
 from app.core.errors import PermanentError
+from app.crawler.raw import RawBundle, stable_card
 from app.scraper.client import MetacriticClient
 from app.scraper.parsers import (
     GameData,
@@ -32,46 +33,53 @@ class ScrapeFormatError(PermanentError):
 _PARSE_ERRORS = (KeyError, TypeError, AttributeError, ValueError)
 
 
-async def fetch_game(client: MetacriticClient, slug: str) -> GameData:
-    raw = await client.game(slug)
+def _parse_card(card: dict, slug: str) -> GameData:
     try:
-        data = parse_game(raw)
+        data = parse_game(card)
     except _PARSE_ERRORS as exc:
         raise ScrapeFormatError(f"карточка {slug}: {exc!r}") from exc
     if data is None:
         raise GameNotFoundError(slug)
-
-    platforms = []
-    for p in data.platforms:
-        if p.platform == data.lead_platform:
-            userscore = data.lead_userscore
-        else:
-            stats = await client.user_stats(slug, p.platform)
-            try:
-                userscore = parse_user_score(stats)
-            except _PARSE_ERRORS as exc:
-                raise ScrapeFormatError(f"оценки {slug}/{p.platform}: {exc!r}") from exc
-        platforms.append(PlatformScore(p.platform, p.name, p.metascore, userscore))
-    data.platforms = platforms
     return data
 
 
-async def fetch_reviews(
-    client: MetacriticClient, data: GameData
-) -> dict[ReviewSource, list[Review]]:
-    reviews = {ReviewSource.CRITIC: [], ReviewSource.USER: []}
+async def fetch_bundle(client: MetacriticClient, slug: str) -> RawBundle:
+    """Сырые ответы по игре: карточка, оценки игроков по платформам, отзывы"""
+    card = stable_card(await client.game(slug))
+    data = _parse_card(card, slug)
+    bundle = RawBundle(card)
+    for p in data.platforms:
+        if p.platform != data.lead_platform:
+            bundle.user_stats[p.platform] = await client.user_stats(slug, p.platform)
+    if data.critic_reviews_total:
+        bundle.critic_reviews = await client.critic_reviews(slug, REVIEWS_LIMIT)
+    if data.user_reviews_total:
+        bundle.user_reviews = await client.user_reviews(slug, REVIEWS_LIMIT)
+    return bundle
+
+
+def parse_bundle(
+    bundle: RawBundle, slug: str = "?"
+) -> tuple[GameData, dict[ReviewSource, list[Review]]]:
+    """Разбор без сети: тот же код пересобирает игру из сохранённого сырого ответа"""
+    data = _parse_card(bundle.card, slug)
     try:
-        if data.critic_reviews_total:
-            reviews[ReviewSource.CRITIC] = parse_reviews(
-                await client.critic_reviews(data.slug, REVIEWS_LIMIT)
-            )
-        if data.user_reviews_total:
-            reviews[ReviewSource.USER] = parse_reviews(
-                await client.user_reviews(data.slug, REVIEWS_LIMIT)
-            )
+        platforms = []
+        for p in data.platforms:
+            if p.platform == data.lead_platform:
+                userscore = data.lead_userscore
+            else:
+                stats = bundle.user_stats.get(p.platform)
+                userscore = parse_user_score(stats) if stats else None
+            platforms.append(PlatformScore(p.platform, p.name, p.metascore, userscore))
+        data.platforms = platforms
+        reviews = {
+            ReviewSource.CRITIC: parse_reviews(bundle.critic_reviews),
+            ReviewSource.USER: parse_reviews(bundle.user_reviews),
+        }
     except _PARSE_ERRORS as exc:
-        raise ScrapeFormatError(f"отзывы {data.slug}: {exc!r}") from exc
-    return reviews
+        raise ScrapeFormatError(f"{data.slug}: {exc!r}") from exc
+    return data, reviews
 
 
 async def upsert_game(
@@ -158,5 +166,31 @@ async def load_reviews(session: AsyncSession, game_id: int, source: str) -> list
     return [Review(text, score, author) for text, score, author in rows]
 
 
-async def save_embedding(session: AsyncSession, game_id: int, vector: list[float]) -> None:
-    await session.execute(update(Game).where(Game.id == game_id).values(embedding=vector))
+async def save_embedding(
+    session: AsyncSession, game_id: int, vector: list[float], model: str, text_hash: str
+) -> None:
+    await session.execute(
+        update(Game)
+        .where(Game.id == game_id)
+        .values(embedding=vector, embedding_model=model, embedding_hash=text_hash)
+    )
+
+
+async def record_scores(session: AsyncSession, game_id: int, platforms: list[PlatformScore]) -> int:
+    """Пишет в историю только платформы, у которых оценки поменялись с прошлого раза"""
+    latest = (
+        select(ScoreHistory.platform, ScoreHistory.metascore, ScoreHistory.userscore)
+        .where(ScoreHistory.game_id == game_id)
+        .order_by(ScoreHistory.platform, ScoreHistory.observed_at.desc(), ScoreHistory.id.desc())
+        .ext(distinct_on(ScoreHistory.platform))
+    )
+    last = {platform: (m, u) for platform, m, u in await session.execute(latest)}
+    changed = [p for p in platforms if last.get(p.platform) != (p.metascore, p.userscore)]
+    session.add_all(
+        ScoreHistory(
+            game_id=game_id, platform=p.platform, metascore=p.metascore, userscore=p.userscore
+        )
+        for p in changed
+    )
+    await session.flush()
+    return len(changed)

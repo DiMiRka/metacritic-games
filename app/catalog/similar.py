@@ -20,7 +20,12 @@ async def _by_embedding(session: AsyncSession, game: Game, limit: int) -> list[G
         await session.execute(
             select(Game, distance.label("distance"))
             .options(selectinload(Game.platforms))
-            .where(Game.id != game.id, Game.embedding.is_not(None))
+            # Векторы разных моделей несравнимы, даже при одинаковой размерности
+            .where(
+                Game.id != game.id,
+                Game.embedding.is_not(None),
+                Game.embedding_model.is_not_distinct_from(game.embedding_model),
+            )
             .order_by(distance)
             .limit(limit * CANDIDATES_FACTOR)
         )

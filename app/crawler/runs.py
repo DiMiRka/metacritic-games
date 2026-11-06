@@ -136,6 +136,7 @@ class RunStats:
     processed: int = 0
     created: int = 0
     updated: int = 0
+    unchanged: int = 0
     failed: int = 0
 
 
@@ -144,13 +145,14 @@ async def run_stats(session: AsyncSession, run_ids: list[int]) -> dict[int, RunS
     if not run_ids:
         return {}
     scrape = RunItem.stage == "scrape"
-    terminal = RunItem.status.in_(["created", "updated", "failed"])
+    terminal = RunItem.status.in_(["created", "updated", "skipped", "failed"])
     rows = await session.execute(
         select(
             RunItem.run_id,
             func.count(func.distinct(RunItem.slug)).filter(scrape, terminal),
             func.count().filter(scrape, RunItem.status == "created"),
             func.count().filter(scrape, RunItem.status == "updated"),
+            func.count().filter(scrape, RunItem.status == "skipped"),
             func.count().filter(RunItem.status == "failed"),
         )
         .where(RunItem.run_id.in_(run_ids))

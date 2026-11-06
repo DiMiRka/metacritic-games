@@ -1,8 +1,12 @@
 import asyncio
+import hashlib
 import threading
 from typing import Protocol
 
-from app.catalog.models import EMBEDDING_DIM
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.catalog.models import EMBEDDING_DIM, Game
 from app.core.config import settings
 from app.scraper.parsers import GameData
 
@@ -10,6 +14,8 @@ MAX_DESCRIPTION_CHARS = 1500
 
 
 class Embedder(Protocol):
+    model: str
+
     async def embed(self, text: str) -> list[float]: ...
 
 
@@ -24,11 +30,27 @@ def embedding_text(game: GameData) -> str:
     return ". ".join(parts)
 
 
+def text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+async def embedding_outdated(session: AsyncSession, game_id: int, model: str) -> bool:
+    """Нужно ли пересчитать эмбеддинг: его нет, либо поменялись текст игры или модель"""
+    game = await session.scalar(select(Game).where(Game.id == game_id))
+    if game is None:
+        return False
+    return (
+        game.embedding is None
+        or game.embedding_model != model
+        or game.embedding_hash != text_hash(embedding_text(game))
+    )
+
+
 class FastEmbedder:
     """Локальная модель на ONNX, грузится при первом вызове и работает в отдельном потоке"""
 
     def __init__(self, model_name: str | None = None, cache_dir: str | None = None) -> None:
-        self._model_name = model_name or settings.embedding_model
+        self.model = self._model_name = model_name or settings.embedding_model
         self._cache_dir = cache_dir or settings.embedding_cache_dir
         self._model = None
         self._lock = threading.Lock()

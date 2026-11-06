@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.catalog.models import ReviewSource, ReviewSummary
-from app.enrichment.llm import Summarizer
+from app.enrichment.llm import PROMPT_VERSION, Summarizer
 from app.scraper.parsers import Review
 
 MIN_REVIEWS = 3
@@ -23,17 +23,17 @@ def reviews_hash(reviews: list[Review]) -> str:
 async def summary_outdated(
     session: AsyncSession, game_id: int, source: ReviewSource, reviews: list[Review], model: str
 ) -> bool:
-    """Нужно ли пересчитать резюме: отзывов достаточно, а их набор или модель изменились"""
+    """Нужно ли пересчитать резюме: отзывов достаточно, а их набор, модель или промпт другие"""
     if len(reviews) < MIN_REVIEWS:
         return False
     existing = (
         await session.execute(
-            select(ReviewSummary.reviews_hash, ReviewSummary.model).where(
-                ReviewSummary.game_id == game_id, ReviewSummary.source == source
-            )
+            select(
+                ReviewSummary.reviews_hash, ReviewSummary.model, ReviewSummary.prompt_version
+            ).where(ReviewSummary.game_id == game_id, ReviewSummary.source == source)
         )
     ).first()
-    return existing != (reviews_hash(reviews), model)
+    return existing != (reviews_hash(reviews), model, PROMPT_VERSION)
 
 
 async def update_summary(
@@ -44,32 +44,24 @@ async def update_summary(
     source: ReviewSource,
     reviews: list[Review],
 ) -> bool:
-    """Пересчитывает резюме, только если набор отзывов или модель изменились"""
-    if len(reviews) < MIN_REVIEWS:
-        return False
-
-    current_hash = reviews_hash(reviews)
+    """Пересчитывает резюме, только если набор отзывов, модель или промпт изменились"""
     async with session_factory() as session:
-        existing = (
-            await session.execute(
-                select(ReviewSummary.reviews_hash, ReviewSummary.model).where(
-                    ReviewSummary.game_id == game_id, ReviewSummary.source == source
-                )
-            )
-        ).first()
-    if existing == (current_hash, summarizer.model):
-        return False
+        if not await summary_outdated(session, game_id, source, reviews, summarizer.model):
+            return False
 
-    digest = await summarizer.summarize(title, source, reviews)
+    summary = await summarizer.summarize(title, source, reviews)
 
     values = {
         "game_id": game_id,
         "source": source,
-        "likes": digest.likes,
-        "dislikes": digest.dislikes,
+        "likes": summary.digest.likes,
+        "dislikes": summary.digest.dislikes,
         "reviews_count": len(reviews),
-        "reviews_hash": current_hash,
+        "reviews_hash": reviews_hash(reviews),
         "model": summarizer.model,
+        "prompt_version": PROMPT_VERSION,
+        "input_tokens": summary.input_tokens,
+        "output_tokens": summary.output_tokens,
     }
     stmt = insert(ReviewSummary).values(**values)
     stmt = stmt.on_conflict_do_update(

@@ -4,7 +4,6 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
-    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -16,7 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.models import Base, created_column, updated_column
+from app.core.models import Base, created_column, enum_check, updated_column
 
 
 class JobKind(StrEnum):
@@ -66,13 +65,8 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
-        CheckConstraint(
-            "kind IN ('collect', 'scrape_game', 'summarize', 'embed', 'letsplay')", name="kind"
-        ),
-        CheckConstraint(
-            "status IN ('queued', 'running', 'done', 'failed', 'dead', 'cancelled')",
-            name="status",
-        ),
+        enum_check("kind", JobKind),
+        enum_check("status", JobStatus),
         Index(
             "ix_jobs_pick",
             text("priority DESC"),
@@ -106,4 +100,4 @@ class Breaker(Base):
     opened_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = updated_column()
 
-    __table_args__ = (CheckConstraint("state IN ('closed', 'open', 'half_open')", name="state"),)
+    __table_args__ = (enum_check("state", BreakerState),)

@@ -1,6 +1,7 @@
 from datetime import datetime
+from enum import StrEnum
 
-from sqlalchemy import DateTime, MetaData, func
+from sqlalchemy import CheckConstraint, DateTime, MetaData, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -22,3 +23,9 @@ def created_column() -> Mapped[datetime]:
 
 def updated_column() -> Mapped[datetime]:
     return mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+def enum_check(column: str, enum: type[StrEnum]) -> CheckConstraint:
+    """CHECK по значениям StrEnum: значения в базе и в коде задаются в одном месте"""
+    values = ", ".join(f"'{member.value}'" for member in enum)
+    return CheckConstraint(f"{column} IN ({values})", name=column)

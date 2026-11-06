@@ -4,8 +4,15 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
-from app.catalog.queries import GameFilters, Sort, get_game, list_games, platform_options
-from app.catalog.schemas import GameDetailOut, GameListOut
+from app.catalog.queries import (
+    GameFilters,
+    Sort,
+    get_game,
+    list_games,
+    platform_options,
+    score_history,
+)
+from app.catalog.schemas import GameDetailOut, GameListOut, ScorePointOut
 from app.catalog.similar import similar_games
 from app.web.deps import Session, load_auth
 from app.web.middleware.ratelimit import api_limit, catalog_limit
@@ -98,3 +105,12 @@ async def api_game(session: Session, slug: str) -> GameDetailOut:
     if game is None:
         raise HTTPException(status_code=404, detail="Игра не найдена")
     return GameDetailOut.from_game(game, await similar_games(session, game))
+
+
+@router.get("/api/games/{slug}/scores", dependencies=[Depends(api_limit)])
+async def api_game_scores(session: Session, slug: str) -> list[ScorePointOut]:
+    """Изменения оценок по платформам для графиков: точка появляется, когда оценка поменялась"""
+    game = await get_game(session, slug)
+    if game is None:
+        raise HTTPException(status_code=404, detail="Игра не найдена")
+    return [ScorePointOut.model_validate(p) for p in await score_history(session, game.id)]

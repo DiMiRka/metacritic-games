@@ -2,6 +2,7 @@
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -14,22 +15,24 @@ from app.crawler.cursor import Cursor, collect_batch
 from app.crawler.lock import try_lock, unlock
 from app.crawler.models import CrawlPhase, CrawlState, RunItemStage, RunItemStatus
 from app.crawler.processor import (
-    fetch_game,
-    fetch_reviews,
+    fetch_bundle,
     load_reviews,
+    parse_bundle,
+    record_scores,
     replace_reviews,
     save_embedding,
     upsert_game,
 )
+from app.crawler.raw import RawBundle, latest_hash, save_raw
 from app.crawler.runs import ItemInfo, create_run, done_today, fail_run, finalize_run, record_item
-from app.enrichment.embeddings import Embedder, embedding_text
+from app.enrichment.embeddings import Embedder, embedding_outdated, embedding_text, text_hash
 from app.enrichment.llm import Summarizer
 from app.enrichment.summaries import summary_outdated, update_summary
 from app.jobs.models import ACTIVE_STATUSES, Job, JobKind
 from app.jobs.pool import Finish, JobType
 from app.jobs.queue import ClaimedJob, enqueue
 from app.scraper.client import MetacriticClient
-from app.scraper.parsers import parse_listing
+from app.scraper.parsers import Review, parse_listing
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +45,7 @@ SCHEDULED_COLLECT_PRIORITY = 50
 class ScrapeResult:
     game_id: int
     created: bool
+    changed: bool = True
 
 
 @dataclass(frozen=True)
@@ -73,6 +77,71 @@ async def collect_active(session: AsyncSession) -> bool:
         .where(Job.kind == JobKind.COLLECT, Job.status.in_(ACTIVE_STATUSES))
     )
     return bool(count)
+
+
+async def store_bundle(
+    session: AsyncSession,
+    bundle: RawBundle,
+    slug: str,
+    processed_at: datetime | None,
+    *,
+    save: bool = True,
+) -> tuple[int, bool, dict[ReviewSource, list[Review]]]:
+    """Разбирает сырой ответ и сохраняет игру, платформы, отзывы и сам ответ"""
+    data, reviews = parse_bundle(bundle, slug)
+    game_id, created = await upsert_game(session, data, processed_at)
+    await replace_reviews(session, game_id, reviews)
+    # При пересборке новых наблюдений нет: ни сырой ответ, ни история оценок не пишутся
+    if save:
+        await save_raw(session, game_id, bundle)
+        await record_scores(session, game_id, data.platforms)
+    return game_id, created, reviews
+
+
+@dataclass
+class Derived:
+    """Сколько задач резюме и эмбеддингов поставлено в очередь"""
+
+    summaries: int = 0
+    embeddings: int = 0
+
+
+async def enqueue_derived(
+    session: AsyncSession,
+    game_id: int,
+    reviews: dict[ReviewSource, list[Review]],
+    *,
+    run_id: int | None,
+    summary_model: str | None,
+    embed_model: str | None,
+) -> Derived:
+    """Резюме и эмбеддинг, только если их входные данные, модель или промпт поменялись"""
+    derived = Derived()
+    if summary_model:
+        for source, items in reviews.items():
+            if await summary_outdated(session, game_id, source, items, summary_model):
+                job_id = await enqueue(
+                    session,
+                    JobKind.SUMMARIZE,
+                    {"game_id": game_id, "source": source},
+                    dedupe_key=f"summarize:{game_id}:{source}",
+                    run_id=run_id,
+                )
+                derived.summaries += job_id is not None
+    if embed_model and await embedding_outdated(session, game_id, embed_model):
+        job_id = await enqueue(
+            session,
+            JobKind.EMBED,
+            {"game_id": game_id},
+            dedupe_key=f"embed:{game_id}",
+            run_id=run_id,
+        )
+        derived.embeddings += job_id is not None
+    return derived
+
+
+async def stored_reviews(session: AsyncSession, game_id: int) -> dict[ReviewSource, list[Review]]:
+    return {source: await load_reviews(session, game_id, source) for source in ReviewSource}
 
 
 class CrawlStages:
@@ -176,35 +245,47 @@ class CrawlStages:
 
     async def scrape_game(self, job: ClaimedJob) -> ScrapeResult:
         slug = job.payload["slug"]
-        data = await fetch_game(self.client, slug)
-        reviews = await fetch_reviews(self.client, data)
+        bundle = await fetch_bundle(self.client, slug)
         async with self.session_factory() as session, session.begin():
-            game_id, created = await upsert_game(session, data, now_tz())
-            await replace_reviews(session, game_id, reviews)
-            if self.summarizer:
-                for source, items in reviews.items():
-                    model = self.summarizer.model
-                    if await summary_outdated(session, game_id, source, items, model):
-                        await enqueue(
-                            session,
-                            JobKind.SUMMARIZE,
-                            {"game_id": game_id, "source": source},
-                            dedupe_key=f"summarize:{game_id}:{source}",
-                            run_id=job.run_id,
-                        )
-            if self.embedder:
-                await enqueue(
-                    session,
-                    JobKind.EMBED,
-                    {"game_id": game_id},
-                    dedupe_key=f"embed:{game_id}",
-                    run_id=job.run_id,
+            game_id = await session.scalar(select(Game.id).where(Game.slug == slug))
+            if game_id is not None and await latest_hash(session, game_id) == bundle.digest:
+                # Ответ тот же: игру не перезаписываем, отмечаем только, что сегодня её видели.
+                # Резюме и эмбеддинг всё равно сверяются: могли смениться модель или промпт
+                await save_raw(session, game_id, bundle)
+                await session.execute(
+                    update(Game).where(Game.id == game_id).values(last_processed_at=now_tz())
                 )
+                reviews = await stored_reviews(session, game_id)
+                await self.enqueue_derived(session, game_id, reviews, job.run_id)
+                return ScrapeResult(game_id, created=False, changed=False)
+            game_id, created, reviews = await store_bundle(session, bundle, slug, now_tz())
+            await self.enqueue_derived(session, game_id, reviews, job.run_id)
         return ScrapeResult(game_id, created)
+
+    async def enqueue_derived(
+        self,
+        session: AsyncSession,
+        game_id: int,
+        reviews: dict[ReviewSource, list[Review]],
+        run_id: int | None,
+    ) -> Derived:
+        return await enqueue_derived(
+            session,
+            game_id,
+            reviews,
+            run_id=run_id,
+            summary_model=self.summarizer.model if self.summarizer else None,
+            embed_model=self.embedder.model if self.embedder else None,
+        )
 
     async def _scrape_finished(self, session: AsyncSession, job: ClaimedJob, finish: Finish):
         result: ScrapeResult | None = finish.result
-        status = RunItemStatus.CREATED if result and result.created else RunItemStatus.UPDATED
+        if result and not result.changed:
+            status = RunItemStatus.SKIPPED
+        elif result and result.created:
+            status = RunItemStatus.CREATED
+        else:
+            status = RunItemStatus.UPDATED
         info = ItemInfo(
             RunItemStage.SCRAPE, job.payload.get("slug"), result and result.game_id, status
         )
@@ -239,12 +320,16 @@ class CrawlStages:
             game = await session.get(Game, game_id)
             if game is None:
                 raise PermanentError(f"игры {game_id} больше нет")
+            if not await embedding_outdated(session, game_id, self.embedder.model):
+                return StageResult(game_id, False)
             text = embedding_text(game)
         vector = await self.embedder.embed(text)
         async with self.session_factory() as session, session.begin():
-            await save_embedding(session, game_id, vector)
+            await save_embedding(session, game_id, vector, self.embedder.model, text_hash(text))
         return StageResult(game_id, True)
 
     async def _embed_finished(self, session: AsyncSession, job: ClaimedJob, finish: Finish):
-        info = ItemInfo(RunItemStage.EMBED, None, job.payload.get("game_id"), RunItemStatus.UPDATED)
+        changed = finish.result.changed if finish.result else False
+        status = RunItemStatus.UPDATED if changed else RunItemStatus.SKIPPED
+        info = ItemInfo(RunItemStage.EMBED, None, job.payload.get("game_id"), status)
         await record_item(session, job, finish, info)

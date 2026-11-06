@@ -1,8 +1,11 @@
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import func, update
 
+from app.catalog.models import Game, ReviewSummary
 from app.core.clock import now_tz
+from app.core.config import settings
 from app.crawler.models import Run, RunItem, WorkerHeartbeat
 from app.jobs.models import Job
 from app.jobs.queue import enqueue
@@ -52,6 +55,19 @@ async def seed(session_factory) -> int:
                 locked_until=func.now() - timedelta(minutes=1),
             )
         )
+        game = Game(slug="g", title="G", genres=[])
+        session.add(game)
+        await session.flush()
+        session.add(
+            ReviewSummary(
+                game_id=game.id,
+                source="user",
+                reviews_hash="h",
+                model="m",
+                input_tokens=1_000_000,
+                output_tokens=200_000,
+            )
+        )
         session.add(WorkerHeartbeat(worker="w1", status="running", current_task="embed#3"))
         session.add(
             WorkerHeartbeat(worker="w2", status="idle", updated_at=now - timedelta(hours=1))
@@ -59,7 +75,9 @@ async def seed(session_factory) -> int:
         return current.id
 
 
-async def test_snapshot(session_factory) -> None:
+async def test_snapshot(session_factory, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "llm_price_input_per_mtok", 0.1)
+    monkeypatch.setattr(settings, "llm_price_output_per_mtok", 0.4)
     current_id = await seed(session_factory)
 
     async with session_factory() as session:
@@ -81,6 +99,8 @@ async def test_snapshot(session_factory) -> None:
     assert [j.kind for j in data.dead] == ["embed"]
     assert data.collect_active is False
     assert data.counters.errors_today == 2
+    assert data.counters.llm_input_tokens_today == 1_000_000
+    assert data.counters.llm_cost_today == pytest.approx(0.18)
 
 
 async def test_worker_alive_ignores_stopped(session_factory) -> None:

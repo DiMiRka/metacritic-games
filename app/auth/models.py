@@ -3,7 +3,6 @@ from enum import StrEnum
 
 from sqlalchemy import (
     Boolean,
-    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -14,7 +13,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.models import Base, created_column
+from app.core.models import Base, created_column, enum_check
 
 
 class UserRole(StrEnum):
@@ -33,7 +32,7 @@ class User(Base):
     created_at: Mapped[datetime] = created_column()
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    __table_args__ = (CheckConstraint("role IN ('viewer', 'admin')", name="role"),)
+    __table_args__ = (enum_check("role", UserRole),)
 
 
 class UserSession(Base):

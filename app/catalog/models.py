@@ -4,7 +4,6 @@ from enum import StrEnum
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
-    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -19,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.models import Base, created_column, updated_column
+from app.core.models import Base, created_column, enum_check, updated_column
 
 EMBEDDING_DIM = 384
 
@@ -51,6 +50,9 @@ class Game(Base):
         ARRAY(String(100)), default=list, server_default=text("'{}'")
     )
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM))
+    # Чем и из какого текста посчитан эмбеддинг: тот же текст той же моделью не пересчитывается
+    embedding_model: Mapped[str | None] = mapped_column(String(100))
+    embedding_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = created_column()
     updated_at: Mapped[datetime] = updated_column()
     last_processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -112,13 +114,18 @@ class ReviewSummary(Base):
     reviews_count: Mapped[int] = mapped_column(Integer, default=0)
     reviews_hash: Mapped[str] = mapped_column(String(64))
     model: Mapped[str] = mapped_column(String(100))
+    # Версия промпта и схемы ответа: при её смене резюме пересчитываются
+    prompt_version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    # Расход токенов на последний пересчёт, по ответу LLM
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
     generated_at: Mapped[datetime] = created_column()
 
     game: Mapped[Game] = relationship(back_populates="summaries")
 
     __table_args__ = (
         UniqueConstraint("game_id", "source", name="uq_review_summaries_game_id_source"),
-        CheckConstraint("source IN ('critic', 'user')", name="source"),
+        enum_check("source", ReviewSource),
     )
 
 
@@ -139,7 +146,7 @@ class Letsplay(Base):
 
     game: Mapped[Game] = relationship(back_populates="letsplay")
 
-    __table_args__ = (Index("ix_letsplays_status", "status"),)
+    __table_args__ = (Index("ix_letsplays_status", "status"), enum_check("status", LetsplayStatus))
 
 
 class GameReview(Base):
@@ -160,5 +167,24 @@ class GameReview(Base):
         UniqueConstraint(
             "game_id", "source", "position", name="uq_game_reviews_game_id_source_position"
         ),
-        CheckConstraint("source IN ('critic', 'user')", name="source"),
+        enum_check("source", ReviewSource),
+    )
+
+
+class ScoreHistory(Base):
+    """Изменения оценок по платформам: строка появляется, только когда оценка поменялась"""
+
+    __tablename__ = "score_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    game_id: Mapped[int] = mapped_column(ForeignKey("games.id", ondelete="CASCADE"))
+    platform: Mapped[str] = mapped_column(String(100))
+    metascore: Mapped[int | None] = mapped_column(Integer)
+    userscore: Mapped[float | None] = mapped_column(Float)
+    observed_at: Mapped[datetime] = created_column()
+
+    __table_args__ = (
+        Index(
+            "ix_score_history_game_id_platform_observed_at", "game_id", "platform", "observed_at"
+        ),
     )

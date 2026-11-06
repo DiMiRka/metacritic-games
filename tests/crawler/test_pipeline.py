@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.core.db import asyncpg_dsn
 from app.crawler import stages as stages_module
 from app.crawler.lock import CRAWL_LOCK_KEY
-from app.crawler.models import CrawlState, Run, RunItem
+from app.crawler.models import CrawlState, RawPage, Run, RunItem
 from app.crawler.runs import done_today, run_stats
 from app.crawler.stages import CrawlStages, enqueue_collect
 from app.jobs.models import Job
@@ -46,7 +46,18 @@ class FlakyClient(FakeClient):
         return await super().game(slug)
 
 
+class ChangedClient(FakeClient):
+    """Та же игра, но поменялось название: hash сырого ответа другой"""
+
+    async def game(self, slug: str):
+        data = await super().game(slug)
+        data["components"][0]["data"]["item"]["title"] += " (обновлено)"
+        return data
+
+
 class FailingEmbedder:
+    model = "fake-embed"
+
     async def embed(self, text: str) -> list[float]:
         raise RuntimeError("модель не загрузилась")
 
@@ -142,13 +153,33 @@ async def test_upsert_is_idempotent_across_days(db_engine, session_factory, monk
     async with session_factory() as session:
         games = await session.scalar(select(func.count()).select_from(Game))
         platforms = await session.scalar(select(func.count()).select_from(GamePlatform))
+        raw = (await session.execute(select(RawPage.fetched_at, RawPage.last_seen_at))).all()
+        game = await session.scalar(select(Game))
     assert (games, platforms) == (1, 5)
-    # Отзывы те же, резюме не пересчитывалось, эмбеддинг считается заново
+    # Сырой ответ тот же: игра не перезаписывается, резюме и эмбеддинг не ставятся
     assert len(summarizer.calls) == 2
-    assert await items(session_factory, run_id) == [
-        ("elden-ring", "scrape", "updated"),
-        ("elden-ring", "embed", "updated"),
-    ]
+    assert await items(session_factory, run_id) == [("elden-ring", "scrape", "skipped")]
+    assert len(raw) == 1
+    assert raw[0].last_seen_at > raw[0].fetched_at
+    assert game.last_processed_at.date() == tomorrow.date()
+
+
+async def test_changed_card_is_stored(db_engine, session_factory, monkeypatch) -> None:
+    await run_pipeline(
+        db_engine, session_factory, FakeClient(new_releases=["elden-ring"], games=GAMES)
+    )
+    tomorrow = now_tz() + timedelta(days=1)
+    monkeypatch.setattr(stages_module, "now_tz", lambda: tomorrow)
+    run_id = await run_pipeline(
+        db_engine, session_factory, ChangedClient(new_releases=["elden-ring"], games=GAMES)
+    )
+
+    assert await items(session_factory, run_id) == [("elden-ring", "scrape", "updated")]
+    async with session_factory() as session:
+        raw = await session.scalar(select(func.count()).select_from(RawPage))
+        title = await session.scalar(select(Game.title))
+    assert raw == 2
+    assert title == "Elden Ring (обновлено)"
 
 
 async def test_second_run_same_day_takes_nothing(db_engine, session_factory) -> None:
@@ -201,7 +232,8 @@ async def test_embedding_failure_keeps_old_vector(db_engine, session_factory, mo
 
     tomorrow = now_tz() + timedelta(days=1)
     monkeypatch.setattr(stages_module, "now_tz", lambda: tomorrow)
-    run_id = await run_pipeline(db_engine, session_factory, client, embedder=FailingEmbedder())
+    changed = ChangedClient(new_releases=["elden-ring"], games=GAMES)
+    run_id = await run_pipeline(db_engine, session_factory, changed, embedder=FailingEmbedder())
 
     assert ("elden-ring", "embed", "failed") in await items(session_factory, run_id)
     async with session_factory() as session:
@@ -245,3 +277,112 @@ async def test_done_today_by_job_status(session_factory) -> None:
         tomorrow = await done_today(session, list("abcdef"), day_start + timedelta(days=1))
     assert today == {"a", "b", "c"}
     assert tomorrow == set()
+
+
+async def test_reparse_rebuilds_from_raw_without_network(db_engine, session_factory) -> None:
+    from app.catalog.models import GameReview
+    from app.crawler.reparse import reparse_games
+
+    client = FakeClient(new_releases=["elden-ring"], games=GAMES)
+    await run_pipeline(db_engine, session_factory, client)
+    async with session_factory() as session, session.begin():
+        game = await session.scalar(select(Game))
+        processed_at = game.last_processed_at
+        await session.execute(update(Game).values(developer=None))
+        await session.execute(GameReview.__table__.delete())
+        session.add(Game(slug="no-raw", title="Без сырого ответа", genres=[]))
+
+    report = await reparse_games(session_factory, summary_model=None, embed_model=None)
+
+    assert (report.rebuilt, report.without_raw, report.failed) == (1, 1, 0)
+    async with session_factory() as session:
+        game = await session.scalar(select(Game).where(Game.slug == "elden-ring"))
+        reviews = await session.scalar(select(func.count()).select_from(GameReview))
+    assert game.developer == "From Software"
+    assert game.last_processed_at == processed_at
+    assert reviews == 40
+
+
+class RescoredClient(FakeClient):
+    """Metascore на PC вырос"""
+
+    async def game(self, slug: str):
+        data = await super().game(slug)
+        for platform in data["components"][0]["data"]["item"]["platforms"]:
+            if platform["slug"] == "pc":
+                platform["criticScoreSummary"]["score"] = 95
+        return data
+
+
+async def test_score_history_records_only_changes(
+    db_engine, session_factory, monkeypatch, make_client
+) -> None:
+    from app.catalog.models import ScoreHistory
+
+    await run_pipeline(
+        db_engine, session_factory, FakeClient(new_releases=["elden-ring"], games=GAMES)
+    )
+    for day, client in ((1, ChangedClient), (2, RescoredClient)):
+        later = now_tz() + timedelta(days=day)
+        monkeypatch.setattr(stages_module, "now_tz", lambda later=later: later)
+        await run_pipeline(
+            db_engine, session_factory, client(new_releases=["elden-ring"], games=GAMES)
+        )
+
+    async with session_factory() as session:
+        rows = (await session.execute(select(ScoreHistory.platform, ScoreHistory.metascore))).all()
+    assert len(rows) == 6
+    assert sorted(m for p, m in rows if p == "pc") == [94, 95]
+
+    async with make_client() as client:
+        points = (await client.get("/api/games/elden-ring/scores")).json()
+    assert [p["metascore"] for p in points if p["platform"] == "pc"] == [94, 95]
+
+
+async def test_embedding_skips_same_text_and_refresh_picks_new_model(
+    db_engine, session_factory, monkeypatch
+) -> None:
+    from app.crawler.reparse import refresh_derived
+
+    embedder = FakeEmbedder()
+    await run_pipeline(
+        db_engine, session_factory, FakeClient(new_releases=["elden-ring"], games=GAMES),
+        embedder=embedder,
+    )  # fmt: skip
+    async with session_factory() as session:
+        game = await session.scalar(select(Game))
+    assert (game.embedding_model, embedder.calls) == ("fake-embed", 1)
+    assert game.embedding_hash is not None
+
+    # Изменились только оценки: текст для эмбеддинга тот же, модель не вызывается
+    later = now_tz() + timedelta(days=1)
+    monkeypatch.setattr(stages_module, "now_tz", lambda: later)
+    run_id = await run_pipeline(
+        db_engine, session_factory, RescoredClient(new_releases=["elden-ring"], games=GAMES),
+        embedder=embedder,
+    )  # fmt: skip
+    assert embedder.calls == 1
+    assert ("elden-ring", "embed", "updated") not in await items(session_factory, run_id)
+
+    first = await refresh_derived(session_factory, summary_model=None, embed_model="fake-embed")
+    second = await refresh_derived(session_factory, summary_model=None, embed_model="new-model")
+    assert (first.embeddings, second.embeddings) == (0, 1)
+
+
+async def test_unchanged_page_still_resummarizes_on_new_model(
+    db_engine, session_factory, monkeypatch
+) -> None:
+    client = FakeClient(new_releases=["elden-ring"], games=GAMES)
+    await run_pipeline(db_engine, session_factory, client, FakeSummarizer("m1"))
+
+    later = now_tz() + timedelta(days=1)
+    monkeypatch.setattr(stages_module, "now_tz", lambda: later)
+    summarizer = FakeSummarizer("m2")
+    run_id = await run_pipeline(db_engine, session_factory, client, summarizer)
+
+    run_items = await items(session_factory, run_id)
+    assert ("elden-ring", "scrape", "skipped") in run_items
+    assert len(summarizer.calls) == 2
+    async with session_factory() as session:
+        models = set((await session.scalars(select(ReviewSummary.model))).all())
+    assert models == {"m2"}

@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from html import escape
 from typing import Protocol
 
@@ -13,6 +14,8 @@ from app.scraper.parsers import Review
 
 log = logging.getLogger(__name__)
 
+# Увеличить при любом изменении SYSTEM_PROMPT или OUTPUT_SCHEMA: старые резюме пересчитаются
+PROMPT_VERSION = 1
 MAX_REVIEW_CHARS = 1200
 MAX_POINTS = 6
 # У SDK по умолчанию 10 минут на запрос, зависший провайдер остановил бы весь проход
@@ -59,6 +62,15 @@ class ReviewDigest(BaseModel):
         return ReviewDigest(likes=clean(self.likes), dislikes=clean(self.dislikes))
 
 
+@dataclass(frozen=True)
+class Summary:
+    """Резюме и расход токенов на его получение"""
+
+    digest: ReviewDigest
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+
 class SummaryError(PermanentError):
     pass
 
@@ -68,7 +80,7 @@ class Summarizer(Protocol):
 
     async def summarize(
         self, title: str, source: ReviewSource, reviews: list[Review]
-    ) -> ReviewDigest: ...
+    ) -> Summary: ...
 
 
 def build_user_prompt(title: str, source: ReviewSource, reviews: list[Review]) -> str:
@@ -89,9 +101,7 @@ class AnthropicSummarizer:
             api_key=api_key, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES
         )
 
-    async def summarize(
-        self, title: str, source: ReviewSource, reviews: list[Review]
-    ) -> ReviewDigest:
+    async def summarize(self, title: str, source: ReviewSource, reviews: list[Review]) -> Summary:
         response = await self._client.messages.create(
             model=self.model,
             max_tokens=4000,
@@ -105,7 +115,12 @@ class AnthropicSummarizer:
         if response.stop_reason != "end_turn":
             raise SummaryError(f"stop_reason={response.stop_reason}")
         text = next((b.text for b in response.content if b.type == "text"), "")
-        return ReviewDigest.model_validate_json(text).trimmed()
+        usage = response.usage
+        return Summary(
+            ReviewDigest.model_validate_json(text).trimmed(),
+            input_tokens=getattr(usage, "input_tokens", None),
+            output_tokens=getattr(usage, "output_tokens", None),
+        )
 
 
 class OpenAICompatibleSummarizer:
@@ -123,9 +138,7 @@ class OpenAICompatibleSummarizer:
             api_key=api_key, base_url=base_url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES
         )
 
-    async def summarize(
-        self, title: str, source: ReviewSource, reviews: list[Review]
-    ) -> ReviewDigest:
+    async def summarize(self, title: str, source: ReviewSource, reviews: list[Review]) -> Summary:
         response = await self._client.chat.completions.create(
             model=self.model,
             max_completion_tokens=4000,
@@ -142,7 +155,12 @@ class OpenAICompatibleSummarizer:
         choice = response.choices[0]
         if choice.finish_reason != "stop" or not choice.message.content:
             raise SummaryError(f"finish_reason={choice.finish_reason}")
-        return ReviewDigest.model_validate_json(choice.message.content).trimmed()
+        usage = response.usage
+        return Summary(
+            ReviewDigest.model_validate_json(choice.message.content).trimmed(),
+            input_tokens=getattr(usage, "prompt_tokens", None),
+            output_tokens=getattr(usage, "completion_tokens", None),
+        )
 
 
 def build_summarizer() -> Summarizer | None:

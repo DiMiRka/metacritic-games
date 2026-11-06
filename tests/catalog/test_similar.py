@@ -11,11 +11,14 @@ def unit(*hot: int) -> list[float]:
     return vector
 
 
-async def add_game(session, slug, embedding=None, genres=(), developer=None, platforms=()):
+async def add_game(
+    session, slug, embedding=None, genres=(), developer=None, platforms=(), model="m1"
+):
     game = Game(
         slug=slug,
         title=slug,
         embedding=embedding,
+        embedding_model=model if embedding is not None else None,
         genres=list(genres),
         developer=developer,
         platforms=[GamePlatform(platform=p, platform_name=p) for p in platforms],
@@ -30,6 +33,7 @@ async def test_similar_by_embedding_with_platform_bonus(session_factory) -> None
         await add_game(session, "near", unit(0, 1), platforms=["ps5"])
         await add_game(session, "near-pc", unit(0, 1), platforms=["pc"])
         await add_game(session, "far", unit(5), platforms=["pc"])
+        await add_game(session, "other-model", unit(0), platforms=["pc"], model="m2")
 
     async with session_factory() as session:
         base = await session.scalar(select(Game).where(Game.slug == "base"))

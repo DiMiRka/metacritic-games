@@ -15,7 +15,9 @@ from app.core.db import SessionLocal, asyncpg_dsn, engine
 from app.crawler.breakers import Breakers
 from app.crawler.heartbeat import beat, cleanup_heartbeats
 from app.crawler.models import Run, RunStatus, RunTrigger
-from app.crawler.stages import CrawlStages, enqueue_collect
+from app.crawler.reparse import ReparseReport, refresh_derived, reparse_games
+from app.crawler.retention import CleanupReport, cleanup
+from app.crawler.stages import CrawlStages, Derived, enqueue_collect
 from app.enrichment.embeddings import FastEmbedder
 from app.enrichment.llm import build_summarizer
 from app.jobs.listener import listen
@@ -29,6 +31,7 @@ log = logging.getLogger("worker")
 HEARTBEAT_SECONDS = 15
 REAPER_SECONDS = 60
 COLLECT_SCHEDULE_JOB = "collect"
+CLEANUP_JOB = "cleanup"
 
 # Группы видов задач со своими лимитами: у Metacritic, LLM и эмбеддингов разные
 # ограничения, цены и характер сбоев
@@ -108,6 +111,12 @@ class Worker:
             job_id = await enqueue_collect(session, RunTrigger.SCHEDULE)
         log.info("collect по расписанию: %s", job_id or "уже в очереди")
 
+    async def cleanup(self) -> None:
+        try:
+            await cleanup(self.session_factory)
+        except Exception:
+            log.exception("очистка старых данных")
+
     async def _reaper(self) -> None:
         while not self.stop.is_set():
             try:
@@ -135,6 +144,14 @@ class Worker:
                 coalesce=True,
                 misfire_grace_time=600,
                 **first,
+            )
+            scheduler.add_job(
+                self.cleanup,
+                "cron",
+                id=CLEANUP_JOB,
+                hour=settings.cleanup_hour,
+                coalesce=True,
+                misfire_grace_time=3600,
             )
         scheduler.add_job(self.heartbeat, "interval", seconds=HEARTBEAT_SECONDS)
         scheduler.start()
@@ -210,3 +227,28 @@ async def crawl_once() -> int | None:
         finally:
             worker.stop.set()
             await task
+
+
+async def reparse(slug: str | None = None) -> ReparseReport:
+    """Пересборка из сырых ответов; резюме и эмбеддинги ставятся в очередь воркеру"""
+    summarizer = build_summarizer()
+    return await reparse_games(
+        SessionLocal,
+        slug=slug,
+        summary_model=summarizer.model if summarizer else None,
+        embed_model=settings.embedding_model,
+    )
+
+
+async def cleanup_now() -> CleanupReport:
+    return await cleanup(SessionLocal)
+
+
+async def refresh() -> Derived:
+    """Резюме и эмбеддинги, устаревшие после смены модели или промпта, ставятся воркеру"""
+    summarizer = build_summarizer()
+    return await refresh_derived(
+        SessionLocal,
+        summary_model=summarizer.model if summarizer else None,
+        embed_model=settings.embedding_model,
+    )

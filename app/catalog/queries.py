@@ -6,7 +6,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.catalog.models import Game, GamePlatform
+from app.catalog.models import Game, GamePlatform, ScoreHistory
 
 PAGE_SIZE = 24
 Sort = Literal["relevance", "date", "metascore", "userscore", "title"]
@@ -123,4 +123,16 @@ async def get_game(session: AsyncSession, slug: str) -> Game | None:
             selectinload(Game.letsplay),
         )
         .where(Game.slug == slug)
+    )
+
+
+async def score_history(session: AsyncSession, game_id: int) -> list[ScoreHistory]:
+    return list(
+        (
+            await session.scalars(
+                select(ScoreHistory)
+                .where(ScoreHistory.game_id == game_id)
+                .order_by(ScoreHistory.platform, ScoreHistory.observed_at, ScoreHistory.id)
+            )
+        ).all()
     )
