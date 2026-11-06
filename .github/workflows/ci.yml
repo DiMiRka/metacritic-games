@@ -138,6 +138,9 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+        env:
+          # Поиск секретов без сторонних пакетов: в их документации ложные срабатывания
+          TRIVY_SECRET_CONFIG: trivy-secret.yaml
       - if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         uses: docker/login-action@v3
         with:
