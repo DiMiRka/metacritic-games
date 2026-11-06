@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from app.core.config import settings
 from app.core.db_roles import apply_roles
 
 WEB = "test_app_web"
@@ -26,7 +27,7 @@ async def conn(db_engine, session_factory):
     async with db_engine.connect() as connection:
         await connection.begin()
         for _ in range(2):
-            await apply_roles(connection, "web-pass", "worker-pass", WEB, WORKER)
+            await apply_roles(connection, "web-pass", "worker-pass", WEB, WORKER, config=settings)
         yield connection
         await connection.rollback()
 

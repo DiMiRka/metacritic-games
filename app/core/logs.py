@@ -17,7 +17,7 @@ from typing import Any
 import sentry_sdk
 from loguru import logger
 
-from app.core.config import settings
+from app.core.config import Settings, settings
 
 NOISY_LOGGERS = ("httpx", "httpcore", "apscheduler.executors.default", "apscheduler.scheduler")
 INTERCEPTED_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi")
@@ -71,11 +71,12 @@ def _text_format(record: dict[str, Any]) -> str:
     )
 
 
-def configure_logging() -> None:
+def configure_logging(config: Settings | None = None) -> None:
     """Можно вызывать повторно: sink'и и перехват ставятся заново"""
+    config = config or settings
     logger.remove()
-    level = settings.log_level.upper()
-    if settings.log_format == "json":
+    level = config.log_level.upper()
+    if config.log_format == "json":
         logger.add(_json_sink, level=level, backtrace=False, diagnose=False)
     else:
         logger.add(sys.stderr, level=level, format=_text_format, diagnose=False)

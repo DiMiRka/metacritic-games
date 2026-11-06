@@ -39,10 +39,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Пул соединений живёт ровно столько, сколько приложение"""
     config: Settings = app.state.settings
     # uvicorn настраивает свои логгеры до импорта приложения, перехватываем их здесь
-    configure_logging()
-    init_sentry("web")
+    configure_logging(config)
+    init_sentry("web", config)
     app.state.db = Database(config.database_url)
-    await _rekey_secrets(app.state.db)
+    await _rekey_secrets(app.state.db, config)
     refresher = None
     if config.web_metrics_port:
         # Отдельный порт во внутренней сети: через Caddy он недоступен
@@ -59,11 +59,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app.state.db.dispose()
 
 
-async def _rekey_secrets(db: Database) -> None:
+async def _rekey_secrets(db: Database, config: Settings) -> None:
     """Секреты TOTP в открытом виде или под прежним SECRET_KEY перешифровываются текущим"""
     try:
         async with db.session_factory() as session, session.begin():
-            changed, failed = await rekey_totp_secrets(session)
+            changed, failed = await rekey_totp_secrets(session, config=config)
         if changed:
             logger.info("секреты TOTP перешифрованы текущим ключом: {}", changed)
         if failed:
@@ -96,6 +96,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="Metacritic Games", version="1", lifespan=lifespan, **docs)
     app.state.settings = config
     app.state.templates = build_templates(config)
+    # Счётчики лимитов частоты у каждого приложения свои
+    app.state.rate_limiters = {}
 
     app.add_middleware(OriginCheckMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)

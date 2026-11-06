@@ -52,7 +52,7 @@ async def load_auth(
     Сессия запроса только читает, отметку активности пишет фоновая задача после ответа
     """
     if not hasattr(request.state, "auth"):
-        auth = await load_session(db, session_token(request))
+        auth = await load_session(db, session_token(request), config=app_settings(request))
         if auth is not None and auth.touch_due:
             background.add_task(touch_session, factory, auth.session_id)
         request.state.auth = auth
@@ -74,7 +74,7 @@ async def require_admin(
 
 def check_csrf(request: Request, candidate: str | None) -> None:
     token = session_token(request)
-    if not token or not csrf_valid(token, candidate):
+    if not token or not csrf_valid(token, candidate, config=app_settings(request)):
         raise HTTPException(status_code=403, detail="Неверный CSRF-токен")
 
 

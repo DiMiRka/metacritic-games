@@ -10,6 +10,7 @@ from sqlalchemy import select, text, update
 
 from app.auth.models import User
 from app.core.clock import now_tz
+from app.core.config import settings
 from app.core.db import asyncpg_dsn
 from app.crawler.lock import CRAWL_LOCK_KEY
 from app.crawler.models import Run, RunItem, WorkerHeartbeat
@@ -206,7 +207,10 @@ def test_sse_event_prefixes_every_line() -> None:
 async def test_monitor_events_stream(session_factory) -> None:
     await add_heartbeat(session_factory)
     events = [
-        e async for e in monitor_events(session_factory, app.state.templates, interval=0, limit=2)
+        e
+        async for e in monitor_events(
+            session_factory, app.state.templates, config=settings, interval=0, limit=2
+        )
     ]
 
     assert len(events) == 2

@@ -33,7 +33,6 @@ from app.core.models import Base
 from app.enrichment.llm import ReviewDigest, Summary
 from app.web.app import create_app
 from app.web.deps import get_session, get_session_factory, session_cookie
-from app.web.middleware.ratelimit import LIMITERS
 
 PASSWORD = "correct horse battery staple"
 app = create_app()
@@ -78,7 +77,7 @@ async def db_engine() -> AsyncIterator[AsyncEngine]:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
-        await create_functions(conn)
+        await create_functions(conn, settings)
     yield engine
     await engine.dispose()
 
@@ -169,7 +168,7 @@ async def create_user(
 async def login_as(session_factory, user_id: int) -> str:
     async with session_factory() as db, db.begin():
         user = await db.get(User, user_id)
-        return await create_session(db, user, "127.0.0.1", "pytest")
+        return await create_session(db, user, "127.0.0.1", "pytest", config=settings)
 
 
 @pytest.fixture
@@ -191,8 +190,7 @@ def log_records() -> list:
 
 @pytest.fixture(autouse=True)
 def reset_rate_limits() -> None:
-    for limiter in LIMITERS:
-        limiter.reset()
+    app.state.rate_limiters.clear()
 
 
 @pytest.fixture
@@ -213,7 +211,7 @@ def make_client(session_factory) -> Callable:
             user_id = await create_user(session_factory, f"{role}-{ip}", role)
             token = await login_as(session_factory, user_id)
             cookies[SESSION_COOKIE] = token
-            headers["X-CSRF-Token"] = csrf_token_for(token)
+            headers["X-CSRF-Token"] = csrf_token_for(token, config=settings)
         transport = ASGITransport(app=app, client=(ip, 50000))
         async with AsyncClient(
             transport=transport, base_url=ORIGIN, headers=headers, cookies=cookies

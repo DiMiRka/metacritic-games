@@ -18,6 +18,7 @@ from app.auth.service import (
     revoke_user_sessions,
     seal_totp_secret,
 )
+from app.core.config import settings
 from app.core.db import default_database
 
 
@@ -80,7 +81,7 @@ async def enable_totp(login: str) -> None:
         raise SystemExit("Код не подошёл, второй фактор не включён")
     async with open_session() as db, db.begin():
         user = await _user(db, login)
-        user.totp_secret = seal_totp_secret(user.id, secret)
+        user.totp_secret = seal_totp_secret(user.id, secret, config=settings)
         user.totp_last_step = step
         codes = await issue_recovery_codes(db, user.id)
     print(f"Второй фактор для {login} включён")
@@ -110,7 +111,7 @@ async def new_recovery_codes(login: str) -> None:
 async def rekey() -> None:
     """Перешифровать секреты TOTP текущим SECRET_KEY, обычно это делает web при старте"""
     async with open_session() as db, db.begin():
-        changed, failed = await rekey_totp_secrets(db)
+        changed, failed = await rekey_totp_secrets(db, config=settings)
     print(f"Перешифровано секретов: {changed}, не удалось расшифровать: {failed}")
     if failed:
         raise SystemExit(1)

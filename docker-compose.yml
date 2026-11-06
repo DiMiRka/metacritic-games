@@ -22,7 +22,7 @@ x-common-env: &common-env
 
 services:
   db:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.7-pg16@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f9b67886f8dc4f
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -176,7 +176,7 @@ services:
   # Ежедневный pg_dump с проверкой восстановления в отдельную базу (scripts/backup.sh).
   # Пароль владельца базы есть только здесь и у migrate
   backup:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.7-pg16@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f9b67886f8dc4f
     entrypoint: ["bash", "/scripts/backup.sh"]
     environment:
       PGHOST: db
@@ -234,7 +234,7 @@ services:
 
   # Метрики и тревоги. Интерфейсы открыты только на 127.0.0.1 сервера: ssh -L 9090:localhost:9090
   prometheus:
-    image: prom/prometheus:v3.5.0
+    image: prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -258,7 +258,7 @@ services:
       - worker
 
   alertmanager:
-    image: prom/alertmanager:v0.28.1
+    image: prom/alertmanager:v0.28.1@sha256:27c475db5fb156cab31d5c18a4251ac7ed567746a2483ff264516437a39b15ba
     entrypoint: ["sh", "/etc/alertmanager/entrypoint.sh"]
     # Токен, чат и адрес сторожевого пинга только здесь: ни web, ни worker их не видят
     environment:
@@ -282,7 +282,7 @@ services:
     restart: unless-stopped
 
   caddy:
-    image: caddy:2
+    image: caddy:2.11.9@sha256:0c2243efcf437ab7f7a978f1027fcf0d4f9be8a75df27b1b3fbc5dbe0ffa8cf0
     environment:
       DOMAIN: ${DOMAIN:-localhost}
       ENV: ${ENV:-dev}

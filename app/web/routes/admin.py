@@ -10,13 +10,22 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.service import load_session
+from app.core.config import Settings
 from app.crawler.control import collect_active, request_manual_collect
 from app.crawler.lock import crawl_lock_held
 from app.crawler.runs import seconds_until_manual_run
 from app.jobs.queue import retry_dead
 from app.monitoring.metrics import refresh
 from app.monitoring.snapshot import MonitorSnapshot, snapshot, worker_alive
-from app.web.deps import Admin, Session, SessionFactory, require_admin, require_csrf, session_token
+from app.web.deps import (
+    Admin,
+    Session,
+    SessionFactory,
+    app_settings,
+    require_admin,
+    require_csrf,
+    session_token,
+)
 from app.web.templating import templates_of
 
 MONITOR_INTERVAL = 2.0
@@ -38,6 +47,8 @@ def sse_event(event: str, data: str) -> str:
 async def monitor_events(
     session_factory: async_sessionmaker[AsyncSession],
     templates: Jinja2Templates,
+    *,
+    config: Settings,
     interval: float = MONITOR_INTERVAL,
     limit: int | None = None,
     still_allowed: Callable[[], Awaitable[bool]] | None = None,
@@ -53,7 +64,7 @@ async def monitor_events(
                 return
             checked_at = time.monotonic()
         async with session_factory() as session:
-            data = await snapshot(session)
+            data = await snapshot(session, config=config)
         yield sse_event("update", render_monitor(templates, data))
         sent += 1
         if limit is None or sent < limit:
@@ -62,7 +73,7 @@ async def monitor_events(
 
 @router.get("/monitor", response_class=HTMLResponse)
 async def monitor_page(request: Request, session: Session) -> HTMLResponse:
-    data = await snapshot(session)
+    data = await snapshot(session, config=app_settings(request))
     return templates_of(request).TemplateResponse(
         request, "monitor.html", {"m": data, "interval_ms": int(MONITOR_INTERVAL * 1000)}
     )
@@ -74,11 +85,16 @@ async def monitor_stream(request: Request, session_factory: SessionFactory) -> S
 
     async def still_allowed() -> bool:
         async with session_factory() as db:
-            auth = await load_session(db, token)
+            auth = await load_session(db, token, config=app_settings(request))
         return auth is not None and auth.is_admin
 
     return StreamingResponse(
-        monitor_events(session_factory, templates_of(request), still_allowed=still_allowed),
+        monitor_events(
+            session_factory,
+            templates_of(request),
+            config=app_settings(request),
+            still_allowed=still_allowed,
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -94,16 +110,17 @@ async def metrics(session: Session) -> Response:
 
 
 @router.get("/api/v1/monitor")
-async def api_monitor(session: Session) -> MonitorSnapshot:
-    return await snapshot(session)
+async def api_monitor(request: Request, session: Session) -> MonitorSnapshot:
+    return await snapshot(session, config=app_settings(request))
 
 
 @router.post("/api/v1/runs", status_code=202, dependencies=[Depends(require_csrf)])
-async def start_run(session: Session, admin: Admin) -> JSONResponse:
+async def start_run(request: Request, session: Session, admin: Admin) -> JSONResponse:
     """202 означает, что задача collect записана в очередь и не потеряется"""
     if await collect_active(session) or await crawl_lock_held(session):
         return JSONResponse({"detail": "Проход уже идёт"}, status_code=409)
-    if wait := await seconds_until_manual_run(session):
+    cooldown = app_settings(request).manual_run_cooldown_minutes
+    if wait := await seconds_until_manual_run(session, cooldown):
         minutes = math.ceil(wait / 60)
         return JSONResponse(
             {"detail": f"Последний проход был недавно, повторить можно через {minutes} мин"},

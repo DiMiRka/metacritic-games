@@ -17,7 +17,6 @@ from app.auth.service import (
     safe_next,
     too_many_attempts,
 )
-from app.core.config import settings
 from app.web.deps import (
     Session,
     app_settings,
@@ -69,18 +68,21 @@ async def login(
 ) -> Response:
     target = safe_next(next)
     ip = client_ip(request)
+    config = app_settings(request)
     # Задержка считается и для несуществующих логинов: по ней нельзя узнать, есть ли логин
-    if wait := await login_delay(db, login):
+    if wait := await login_delay(db, login, config=config):
         message = f"Много неудачных попыток под этим логином, повторите через {wait} с"
         return render_login(request, target, message, status=429)
-    if await too_many_attempts(db, ip, login):
-        message = f"Слишком много попыток, попробуйте через {settings.login_window_minutes} мин"
+    if await too_many_attempts(db, ip, login, config=config):
+        message = f"Слишком много попыток, попробуйте через {config.login_window_minutes} мин"
         return render_login(request, target, message, status=429)
 
     user = await authenticate(db, login, password)
-    factor = await check_second_factor(db, user, code) if user else SecondFactor.INVALID
+    factor = (
+        await check_second_factor(db, user, code, config=config) if user else SecondFactor.INVALID
+    )
     if factor is SecondFactor.INVALID:
-        await record_failed_attempt(db, ip, login)
+        await record_failed_attempt(db, ip, login, config=config)
         await db.commit()
         return render_login(request, target, INVALID_CREDENTIALS, status=401)
     if factor is SecondFactor.SETUP_REQUIRED:
@@ -94,10 +96,9 @@ async def login(
     await clear_attempts(db, ip, login)
     if old_token := session_token(request):
         await revoke_session(db, old_token)
-    token = await create_session(db, user, ip, request.headers.get("user-agent"))
+    token = await create_session(db, user, ip, request.headers.get("user-agent"), config=config)
     await db.commit()
 
-    config = app_settings(request)
     response = RedirectResponse(target, status_code=303)
     response.set_cookie(
         session_cookie(config),

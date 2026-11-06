@@ -224,7 +224,7 @@ async def test_foreign_origin_rejected(session_factory, headers) -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url=ORIGIN) as client:
         client.cookies.set(SESSION_COOKIE, token)
-        headers = {"X-CSRF-Token": csrf_token_for(token), **headers}
+        headers = {"X-CSRF-Token": csrf_token_for(token, config=settings), **headers}
         run = await client.post("/api/v1/runs", headers=headers)
         login = await client.post("/login", data={"login": "admin"}, headers=headers)
     assert run.status_code == login.status_code == 403
@@ -253,6 +253,7 @@ async def test_stream_closes_when_session_revoked(session_factory) -> None:
         async for e in monitor_events(
             session_factory,
             app.state.templates,
+            config=settings,
             interval=0,
             limit=10,
             still_allowed=still_allowed,
@@ -328,7 +329,7 @@ async def enable_totp(session_factory, user_id: int) -> str:
     from app.auth.service import seal_totp_secret
 
     secret = totp.new_secret()
-    sealed = seal_totp_secret(user_id, secret)
+    sealed = seal_totp_secret(user_id, secret, config=settings)
     async with session_factory() as db, db.begin():
         await db.execute(update(User).where(User.id == user_id).values(totp_secret=sealed))
     return secret

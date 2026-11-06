@@ -30,10 +30,12 @@ def test_prod_requires_secret_key() -> None:
 def test_csrf_token_depends_on_server_secret(monkeypatch) -> None:
     token = "session-token"
     monkeypatch.setattr(settings, "secret_key", "a" * 64)
-    first = auth_service.csrf_token_for(token)
+    first = auth_service.csrf_token_for(token, config=settings)
     monkeypatch.setattr(settings, "secret_key", "b" * 64)
-    assert auth_service.csrf_token_for(token) != first
-    assert auth_service.csrf_valid(token, auth_service.csrf_token_for(token))
+    assert auth_service.csrf_token_for(token, config=settings) != first
+    assert auth_service.csrf_valid(
+        token, auth_service.csrf_token_for(token, config=settings), config=settings
+    )
 
 
 async def test_request_session_only_reads_and_touch_runs_after_response(
@@ -50,7 +52,7 @@ async def test_request_session_only_reads_and_touch_runs_after_response(
         before = await db.scalar(select(UserSession.last_seen_at))
 
     async with session_factory() as db:
-        auth = await auth_service.load_session(db, token)
+        auth = await auth_service.load_session(db, token, config=settings)
         assert auth.touch_due
         assert not db.in_transaction() or not db.dirty
 

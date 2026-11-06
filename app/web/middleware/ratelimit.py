@@ -1,7 +1,8 @@
 """Ограничение частоты запросов по IP со скользящим окном
 
-Счётчики живут в памяти процесса: при нескольких процессах uvicorn лимит фактически
-умножится на их число. Сейчас web работает одним процессом, ограничение описано в README
+Лимит берётся из настроек приложения, счётчики живут в app.state: у каждого приложения
+свои. Они в памяти процесса, при нескольких процессах uvicorn лимит фактически умножится
+на их число. Сейчас web работает одним процессом, ограничение описано в README
 """
 
 import math
@@ -10,8 +11,6 @@ from collections import deque
 from collections.abc import Callable
 
 from fastapi import HTTPException, Request
-
-from app.core.config import settings
 
 MAX_KEYS = 50_000
 
@@ -44,10 +43,25 @@ class RateLimiter:
         hits.append(now)
         return None
 
+
+class IpRateLimit:
+    """Зависимость FastAPI: лимит по IP из настройки приложения с именем setting"""
+
+    def __init__(self, name: str, setting: str) -> None:
+        self.name = name
+        self.setting = setting
+
+    def limiter(self, request: Request) -> RateLimiter:
+        limiters: dict[str, RateLimiter] = request.app.state.rate_limiters
+        if self.name not in limiters:
+            config = request.app.state.settings
+            limiters[self.name] = RateLimiter(self.name, lambda: getattr(config, self.setting))
+        return limiters[self.name]
+
     async def __call__(self, request: Request) -> None:
         # За Caddy адрес клиента приходит из X-Forwarded-For, которому доверяет uvicorn
         ip = request.client.host if request.client else "unknown"
-        wait = self.hit(ip)
+        wait = self.limiter(request).hit(ip)
         if wait is not None:
             raise HTTPException(
                 status_code=429,
@@ -56,7 +70,6 @@ class RateLimiter:
             )
 
 
-catalog_limit = RateLimiter("catalog", lambda: settings.rate_limit_catalog_per_minute)
-api_limit = RateLimiter("api", lambda: settings.rate_limit_api_per_minute)
-login_limit = RateLimiter("login", lambda: settings.rate_limit_login_per_minute)
-LIMITERS = (catalog_limit, api_limit, login_limit)
+catalog_limit = IpRateLimit("catalog", "rate_limit_catalog_per_minute")
+api_limit = IpRateLimit("api", "rate_limit_api_per_minute")
+login_limit = IpRateLimit("login", "rate_limit_login_per_minute")

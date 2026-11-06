@@ -9,7 +9,7 @@ from app.auth.models import User
 from app.auth.service import failed_login_series
 from app.catalog.models import Game, ReviewSummary
 from app.core.clock import day_bounds, now_tz
-from app.core.config import settings
+from app.core.config import Settings
 from app.crawler.heartbeat import WORKER_STALE_SECONDS, live_workers
 from app.crawler.models import CrawlState, Run, RunItem, RunStatus, WorkerHeartbeat
 from app.crawler.runs import run_stats
@@ -163,7 +163,9 @@ async def _queue(session: AsyncSession) -> list[QueueRow]:
     return list(by_kind.values())
 
 
-async def _llm_usage(session: AsyncSession, day_start: datetime) -> dict[str, Any]:
+async def _llm_usage(
+    session: AsyncSession, day_start: datetime, config: Settings
+) -> dict[str, Any]:
     tokens_in, tokens_out = (
         await session.execute(
             select(
@@ -175,7 +177,7 @@ async def _llm_usage(session: AsyncSession, day_start: datetime) -> dict[str, An
     return {
         "llm_input_tokens_today": tokens_in,
         "llm_output_tokens_today": tokens_out,
-        "llm_cost_today": llm_cost(tokens_in, tokens_out),
+        "llm_cost_today": llm_cost(tokens_in, tokens_out, config),
     }
 
 
@@ -183,16 +185,18 @@ def _job_out(job: Job) -> JobOut:
     return JobOut.model_validate(job, from_attributes=True)
 
 
-def llm_cost(input_tokens: int, output_tokens: int) -> float | None:
-    price_in, price_out = settings.llm_price_input_per_mtok, settings.llm_price_output_per_mtok
+def llm_cost(input_tokens: int, output_tokens: int, config: Settings) -> float | None:
+    price_in, price_out = config.llm_price_input_per_mtok, config.llm_price_output_per_mtok
     if not (price_in or price_out):
         return None
     return (input_tokens * price_in + output_tokens * price_out) / 1_000_000
 
 
-async def snapshot(session: AsyncSession, now: datetime | None = None) -> MonitorSnapshot:
-    now = now or now_tz()
-    today, day_start = day_bounds(now)
+async def snapshot(
+    session: AsyncSession, *, config: Settings, now: datetime | None = None
+) -> MonitorSnapshot:
+    now = now or now_tz(config.tz)
+    today, day_start = day_bounds(now, config.tz)
     fresh = now - timedelta(seconds=WORKER_STALE_SECONDS)
 
     heartbeats = (
@@ -289,7 +293,7 @@ async def snapshot(session: AsyncSession, now: datetime | None = None) -> Monito
             for f in await failed_login_series(session)
         ],
         counters=Counters(
-            **await _llm_usage(session, day_start),
+            **await _llm_usage(session, day_start, config),
             games_total=games_total,
             processed_today=processed_today,
             summaries_total=await session.scalar(select(func.count()).select_from(ReviewSummary)),

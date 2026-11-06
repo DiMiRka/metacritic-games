@@ -2,9 +2,9 @@
 # Зависимости ставятся строго по uv.lock с проверкой хешей, в образ web не попадают
 # fastembed, LLM-клиенты и прочие библиотеки воркера
 
-FROM ghcr.io/astral-sh/uv:0.12.6 AS uv
+FROM ghcr.io/astral-sh/uv:0.12.6@sha256:88bc6eb1ccd4b82efd0e1b530caffabddf50dc2bf612e66c14ea25b8ee8a4d3d AS uv
 
-FROM python:3.12-slim AS base
+FROM python:3.12.16-slim-trixie@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54 AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -46,13 +46,13 @@ CMD ["uvicorn", "app.web.app:create_app", "--factory", "--host", "0.0.0.0", "--p
 # rclone собирается из исходников: официальный образ может отставать по версии Go,
 # а исправления crypto/x509 и crypto/tls важны для выгрузки по TLS. Версия Go обновляется
 # вместе с образом golang (Dependabot), версия rclone — в RCLONE_VERSION
-FROM golang:1.27.3-alpine3.24 AS rclone-build
+FROM golang:1.27.3-alpine3.24@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS rclone-build
 ARG RCLONE_VERSION=v1.75.2
 RUN CGO_ENABLED=0 go install -trimpath \
         -ldflags "-s -w -X github.com/rclone/rclone/fs.Version=${RCLONE_VERSION}" \
         github.com/rclone/rclone@${RCLONE_VERSION}
 
-FROM alpine:3.24.4 AS offsite
+FROM alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4 AS offsite
 # upgrade подтягивает исправления Alpine, вышедшие после сборки базового образа
 RUN apk upgrade --no-cache && apk add --no-cache age ca-certificates
 COPY --from=rclone-build /go/bin/rclone /usr/local/bin/rclone

@@ -81,7 +81,7 @@ async def test_snapshot(session_factory, monkeypatch) -> None:
     current_id = await seed(session_factory)
 
     async with session_factory() as session:
-        data = await snapshot(session)
+        data = await snapshot(session, config=settings)
         alive = await worker_alive(session)
 
     assert alive is True

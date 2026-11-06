@@ -1,11 +1,13 @@
 """Переменные окружения сервисов: каждому только своё"""
 
+import re
 from pathlib import Path
 
 import yaml
 
 from app.core.config import Settings
 
+ROOT = Path(__file__).parents[1]
 COMPOSE = yaml.safe_load((Path(__file__).parents[1] / "docker-compose.yml").read_text("utf-8"))
 SECRETS = {"ANTHROPIC_API_KEY", "LLM_API_KEY", "YOUTUBE_API_KEY"}
 TELEGRAM = {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
@@ -91,3 +93,36 @@ def test_offsite_keys_only_in_offsite() -> None:
     for name in COMPOSE["services"]:
         if name != "backup-offsite":
             assert not keys & env(name), name
+
+
+# Внешние образы: точная версия и digest. Обновляет их Dependabot, а не тихий pull
+PINNED = re.compile(r"[\w./-]+:[\w.-]*\d[\w.-]*@sha256:[0-9a-f]{64}")
+
+
+def external_images() -> dict[str, str]:
+    images = {
+        name: service["image"]
+        for name, service in COMPOSE["services"].items()
+        if "image" in service and "build" not in service
+    }
+    dockerfile = (ROOT / "Dockerfile").read_text("utf-8")
+    stages = set(re.findall(r"^FROM \S+ AS (\S+)", dockerfile, re.M))
+    for ref in re.findall(r"^FROM (\S+)", dockerfile, re.M):
+        if ref not in stages:
+            images[f"Dockerfile {ref.split('@')[0]}"] = ref
+    return images
+
+
+def test_external_images_pinned_by_version_and_digest() -> None:
+    loose = {name: ref for name, ref in external_images().items() if not PINNED.fullmatch(ref)}
+    assert not loose, f"закрепите версию и digest: {loose}"
+    assert not any(
+        ref.split("@")[0].endswith((":latest", ":2", ":pg16")) for ref in external_images().values()
+    )
+
+
+def test_ci_postgres_matches_compose() -> None:
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text("utf-8"))
+    db = COMPOSE["services"]["db"]["image"]
+    for job in ("test", "e2e"):
+        assert ci["jobs"][job]["services"]["db"]["image"] == db, job

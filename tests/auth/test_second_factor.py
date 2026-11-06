@@ -28,7 +28,7 @@ async def with_totp(session_factory) -> tuple[int, str]:
         await db.execute(
             update(User)
             .where(User.id == user_id)
-            .values(totp_secret=seal_totp_secret(user_id, secret))
+            .values(totp_secret=seal_totp_secret(user_id, secret, config=settings))
         )
     return user_id, secret
 
@@ -54,15 +54,15 @@ async def test_rekey_encrypts_plaintext_and_old_key(session_factory, monkeypatch
         await db.execute(
             update(User)
             .where(User.id == old_id)
-            .values(totp_secret=seal_totp_secret(old_id, "OLD2345"))
+            .values(totp_secret=seal_totp_secret(old_id, "OLD2345", config=settings))
         )
 
     monkeypatch.setattr(settings, "secret_key", NEW)
     monkeypatch.setattr(settings, "secret_key_previous", OLD)
     async with session_factory() as db, db.begin():
-        assert await rekey_totp_secrets(db) == (2, 0)
+        assert await rekey_totp_secrets(db, config=settings) == (2, 0)
     async with session_factory() as db, db.begin():
-        assert await rekey_totp_secrets(db) == (0, 0)
+        assert await rekey_totp_secrets(db, config=settings) == (0, 0)
 
     # Прежний ключ больше не нужен: всё под текущим
     monkeypatch.setattr(settings, "secret_key_previous", "")
@@ -70,8 +70,8 @@ async def test_rekey_encrypts_plaintext_and_old_key(session_factory, monkeypatch
 
     async with session_factory() as db:
         users = {u.login: u for u in (await db.scalars(select(User))).all()}
-    assert open_totp_secret(users["legacy"]) == "PLAIN234"
-    assert open_totp_secret(users["old"]) == "OLD2345"
+    assert open_totp_secret(users["legacy"], config=settings) == "PLAIN234"
+    assert open_totp_secret(users["old"], config=settings) == "OLD2345"
 
 
 async def test_rekey_reports_secret_under_unknown_key(session_factory, monkeypatch) -> None:
@@ -81,12 +81,12 @@ async def test_rekey_reports_secret_under_unknown_key(session_factory, monkeypat
         await db.execute(
             update(User)
             .where(User.id == user_id)
-            .values(totp_secret=seal_totp_secret(user_id, "X"))
+            .values(totp_secret=seal_totp_secret(user_id, "X", config=settings))
         )
     monkeypatch.setattr(settings, "secret_key", NEW)
     monkeypatch.setattr(settings, "secret_key_previous", "")
     async with session_factory() as db, db.begin():
-        assert await rekey_totp_secrets(db) == (0, 1)
+        assert await rekey_totp_secrets(db, config=settings) == (0, 1)
 
 
 async def test_recovery_code_single_use(make_client, session_factory) -> None:
@@ -135,7 +135,7 @@ async def test_idle_session_expires(session_factory, monkeypatch) -> None:
     user_id = await create_user(session_factory, "admin")
     token = await login_as(session_factory, user_id)
     async with session_factory() as db:
-        assert await load_session(db, token) is not None
+        assert await load_session(db, token, config=settings) is not None
 
     async with session_factory() as db, db.begin():
         await db.execute(
@@ -144,11 +144,11 @@ async def test_idle_session_expires(session_factory, monkeypatch) -> None:
             )
         )
     async with session_factory() as db:
-        assert await load_session(db, token) is None
+        assert await load_session(db, token, config=settings) is None
 
     monkeypatch.setattr(settings, "session_idle_minutes", 0)
     async with session_factory() as db:
-        assert await load_session(db, token) is not None
+        assert await load_session(db, token, config=settings) is not None
 
 
 def test_csrf_token_from_previous_key_accepted(monkeypatch) -> None:
@@ -156,9 +156,9 @@ def test_csrf_token_from_previous_key_accepted(monkeypatch) -> None:
 
     monkeypatch.setattr(settings, "secret_key", OLD)
     monkeypatch.setattr(settings, "secret_key_previous", "")
-    old_token = csrf_token_for("session")
+    old_token = csrf_token_for("session", config=settings)
     monkeypatch.setattr(settings, "secret_key", NEW)
-    assert not csrf_valid("session", old_token)
+    assert not csrf_valid("session", old_token, config=settings)
     monkeypatch.setattr(settings, "secret_key_previous", OLD)
-    assert csrf_valid("session", old_token)
-    assert csrf_valid("session", csrf_token_for("session"))
+    assert csrf_valid("session", old_token, config=settings)
+    assert csrf_valid("session", csrf_token_for("session", config=settings), config=settings)

@@ -11,7 +11,7 @@ dead-задачу. Воркер чистит сессии и попытки вх
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.core.db import default_database
 
 WEB_ROLE = "app_web"
@@ -60,13 +60,13 @@ WEB_FUNCTIONS = ("request_manual_collect(integer)", "retry_dead_job(bigint)")
 WORKER_FUNCTIONS = ("purge_auth_records()",)
 
 
-def function_statements() -> list[str]:
+def function_statements(config: Settings) -> list[str]:
     """Функции с правами владельца: роль получает EXECUTE и не может больше, чем делает функция.
     Настройки подставляются при создании, поэтому их не подменить в обход db-roles
     """
-    max_attempts = int(settings.job_max_attempts)
-    cooldown = int(settings.manual_run_cooldown_minutes)
-    keep = max(int(settings.login_window_minutes), MIN_LOGIN_ATTEMPTS_KEEP_MINUTES)
+    max_attempts = int(config.job_max_attempts)
+    cooldown = int(config.manual_run_cooldown_minutes)
+    keep = max(int(config.login_window_minutes), MIN_LOGIN_ATTEMPTS_KEEP_MINUTES)
     header = "LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public"
     return [
         f"""
@@ -128,8 +128,8 @@ $fn$""",
     ]
 
 
-async def create_functions(conn: AsyncConnection) -> None:
-    for statement in function_statements():
+async def create_functions(conn: AsyncConnection, config: Settings) -> None:
+    for statement in function_statements(config):
         await conn.execute(text(statement))
 
 
@@ -163,6 +163,8 @@ async def apply_roles(
     worker_password: str,
     web_role: str = WEB_ROLE,
     worker_role: str = WORKER_ROLE,
+    *,
+    config: Settings,
 ) -> None:
     await _ensure_role(conn, web_role, web_password)
     await _ensure_role(conn, worker_role, worker_password)
@@ -170,7 +172,7 @@ async def apply_roles(
     database = await conn.scalar(text("SELECT current_database()"))
     roles = f'"{web_role}", "{worker_role}"'
 
-    await create_functions(conn)
+    await create_functions(conn, config)
     statements = [
         f'GRANT CONNECT ON DATABASE "{database}" TO {roles}',
         f"GRANT USAGE ON SCHEMA public TO {roles}",
@@ -202,9 +204,11 @@ async def apply_roles(
         await conn.execute(text(statement))
 
 
-async def setup_roles() -> None:
-    if not settings.app_web_db_password or not settings.app_worker_db_password:
+async def setup_roles(config: Settings = settings) -> None:
+    if not config.app_web_db_password or not config.app_worker_db_password:
         raise SystemExit("Задайте APP_WEB_DB_PASSWORD и APP_WORKER_DB_PASSWORD в .env")
     async with default_database().engine.begin() as conn:
-        await apply_roles(conn, settings.app_web_db_password, settings.app_worker_db_password)
+        await apply_roles(
+            conn, config.app_web_db_password, config.app_worker_db_password, config=config
+        )
     print(f"Роли {WEB_ROLE} и {WORKER_ROLE} настроены")

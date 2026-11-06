@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.models import User
 from app.core.clock import now_tz
-from app.core.config import settings
 from app.crawler.models import Run, RunItem, RunItemStatus, RunStatus
 from app.jobs.pool import Finish
 from app.jobs.queue import ClaimedJob
@@ -161,10 +160,12 @@ async def run_stats(session: AsyncSession, run_ids: list[int]) -> dict[int, RunS
     return {row[0]: RunStats(*row[1:]) for row in rows}
 
 
-async def seconds_until_manual_run(session: AsyncSession, now: datetime | None = None) -> int:
+async def seconds_until_manual_run(
+    session: AsyncSession, cooldown_minutes: int, now: datetime | None = None
+) -> int:
     """Сколько ждать до следующего ручного запуска, считая от старта последнего прохода"""
     last_started = await session.scalar(select(func.max(Run.started_at)))
     if last_started is None:
         return 0
-    allowed_at = last_started + timedelta(minutes=settings.manual_run_cooldown_minutes)
+    allowed_at = last_started + timedelta(minutes=cooldown_minutes)
     return max(0, math.ceil((allowed_at - (now or now_tz())).total_seconds()))
