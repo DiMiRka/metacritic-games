@@ -1,6 +1,15 @@
 groups:
   - name: metacritic
     rules:
+      # Горит всегда. Alertmanager пересылает её внешнему сервису раз в минуту, тот
+      # тревожит, когда сигнал пропадает: так видно падение сервера, Prometheus и Alertmanager
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Сторожевой сигнал: цепочка тревог работает"
+
       - alert: WorkerHeartbeatStale
         expr: crawler_worker_heartbeat_age_seconds > 120
         labels:

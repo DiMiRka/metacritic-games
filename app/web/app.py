@@ -2,8 +2,7 @@
 
 import asyncio
 import contextlib
-import secrets
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from urllib.parse import quote
 
@@ -19,11 +18,12 @@ from app.auth.service import rekey_totp_secrets
 from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.core.db import Database
-from app.core.logs import configure_logging, log_context
+from app.core.logs import configure_logging
 from app.core.sentry import init_sentry
 from app.monitoring.metrics import refresh_forever
 from app.web.deps import LoginRequiredError, wants_html
 from app.web.middleware.csrf import OriginCheckMiddleware
+from app.web.middleware.request_id import RequestIdMiddleware
 from app.web.middleware.security_headers import SecurityHeadersMiddleware
 from app.web.routes import admin, auth, legacy, public
 from app.web.templating import WEB_DIR, build_templates, templates_of
@@ -89,17 +89,6 @@ async def http_error(request: Request, exc: StarletteHTTPException) -> Response:
     return await http_exception_handler(request, exc)
 
 
-async def request_context(
-    request: Request, call_next: Callable[[Request], Awaitable[Response]]
-) -> Response:
-    """request_id в каждой строке лога запроса и в заголовке ответа"""
-    request_id = secrets.token_hex(6)
-    with log_context(request_id=request_id):
-        response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id
-    return response
-
-
 def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or default_settings
     # В проде документация API не публикуется
@@ -110,7 +99,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.add_middleware(OriginCheckMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
-    app.middleware("http")(request_context)
+    # Последним, значит внешним: request_id есть и в строках остальных middleware
+    app.add_middleware(RequestIdMiddleware)
     app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 
     app.include_router(public.router)

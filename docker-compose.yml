@@ -260,10 +260,11 @@ services:
   alertmanager:
     image: prom/alertmanager:v0.28.1
     entrypoint: ["sh", "/etc/alertmanager/entrypoint.sh"]
-    # Токен и чат только здесь: ни web, ни worker их не видят
+    # Токен, чат и адрес сторожевого пинга только здесь: ни web, ни worker их не видят
     environment:
       TELEGRAM_BOT_TOKEN:
       TELEGRAM_CHAT_ID:
+      DEADMAN_PING_URL:
     volumes:
       - ./monitoring/alertmanager-entrypoint.sh:/etc/alertmanager/entrypoint.sh:ro
       - alertmanager_data:/alertmanager

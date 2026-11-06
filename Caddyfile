@@ -7,5 +7,15 @@
 	@prod expression "{$ENV:dev}" == "prod"
 	header @prod Strict-Transport-Security "max-age=31536000"
 
-	reverse_proxy web:8000
+	# Журнал Caddy в JSON, у каждой строки тот же request_id, что в журнале приложения
+	log {
+		output stdout
+		format json
+	}
+	log_append request_id {http.request.uuid}
+
+	# Свой id на каждый запрос: присланный клиентом X-Request-ID заменяется
+	reverse_proxy web:8000 {
+		header_up X-Request-ID {http.request.uuid}
+	}
 }

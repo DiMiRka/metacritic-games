@@ -38,7 +38,7 @@ def test_every_setting_reaches_some_service() -> None:
 
 
 def test_telegram_only_in_alertmanager() -> None:
-    assert env("alertmanager") == TELEGRAM
+    assert env("alertmanager") == TELEGRAM | {"DEADMAN_PING_URL"}
     for name in ("web", "worker", "migrate", "prometheus"):
         assert not TELEGRAM & env(name), name
 

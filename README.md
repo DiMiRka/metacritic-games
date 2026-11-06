@@ -91,6 +91,14 @@ POST /api/v1/runs ──────┴─► collect ─► scrape_game ×20 �
 - сбор кандидатов: `run_id` с момента создания прохода;
 - запрос к сайту: `request_id`, он же уходит в заголовке `X-Request-ID`.
 
+`request_id` ставит Caddy (`{http.request.uuid}`) и передаёт приложению в `X-Request-ID`. Присланный клиентом заголовок Caddy заменяет своим. Журнал Caddy тоже в JSON и содержит поле `request_id`, поэтому одним значением находится запрос и в журнале прокси, и в журнале приложения:
+
+```bash
+docker compose logs --no-log-prefix caddy web | jq 'select(.request_id == "0f8fad5b-…")'
+```
+
+Если приложение запущено без Caddy, id генерирует оно само. Контекст держит ASGI-middleware (`app/web/middleware/request_id.py`), а не `BaseHTTPMiddleware`. Поэтому `request_id` есть и в строках, которые пишутся во время потокового ответа, например в потоке SSE монитора.
+
 Стандартный `logging` (uvicorn, SQLAlchemy, APScheduler) перехватывается и идёт тем же путём. Все строки одного прохода находятся одним фильтром:
 
 ```bash
@@ -139,6 +147,16 @@ Prometheus опрашивает порты `9100` (worker) и `9101` (web). Он
 | `TargetDown` | Prometheus не может опросить web или worker 2 минуты |
 
 Порог доли ошибок меняется прямо в `monitoring/alerts.yml`.
+
+**Сторожевой сигнал.** Prometheus и Alertmanager живут на том же сервере. Если упадёт сервер целиком, тревога о нём не придёт. Для этого есть правило `Watchdog`: оно горит всегда, и Alertmanager раз в минуту отправляет его на `DEADMAN_PING_URL` внешнего сервиса. Внешний сервис сам поднимает тревогу, когда пинги перестают приходить, то есть когда не работает сервер, Prometheus, Alertmanager или выход в интернет.
+
+Настройка на healthchecks.io (бесплатного тарифа хватает):
+
+1. Создать проверку с периодом 5 минут и запасом 5 минут.
+2. Уведомления проверки направить в Telegram, на почту или в другой канал. Это должен быть канал, который не зависит от этого сервера.
+3. Вписать адрес пинга `https://hc-ping.com/<uuid>` в `DEADMAN_PING_URL` в `.env` и перезапустить Alertmanager: `docker compose up -d alertmanager`.
+
+Подойдёт любой сервис, принимающий HTTP-пинги: Dead Man's Snitch, Cronitor, Better Stack. `Watchdog` уходит только на этот адрес и в Telegram не попадает. Адрес пинга получает только Alertmanager.
 
 Чтобы тревоги приходили в Telegram:
 
