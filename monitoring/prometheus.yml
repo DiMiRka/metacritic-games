@@ -14,7 +14,7 @@ scrape_configs:
   # Показатели из базы: очередь, проходы, heartbeat, доля ошибок, автоматы
   - job_name: web
     static_configs:
-      - targets: ["web:8000"]
+      - targets: ["web:9101"]
   # Счётчики процесса воркера: Metacritic, LLM, задачи
   - job_name: worker
     static_configs:

@@ -4,8 +4,9 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.service import load_session
@@ -13,6 +14,7 @@ from app.crawler.control import collect_active, request_manual_collect
 from app.crawler.lock import crawl_lock_held
 from app.crawler.runs import seconds_until_manual_run
 from app.jobs.queue import retry_dead
+from app.monitoring.metrics import refresh
 from app.monitoring.snapshot import MonitorSnapshot, snapshot, worker_alive
 from app.web.deps import Admin, Session, SessionFactory, require_admin, require_csrf, session_token
 from app.web.templating import templates_of
@@ -80,6 +82,15 @@ async def monitor_stream(request: Request, session_factory: SessionFactory) -> S
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get("/metrics", include_in_schema=False)
+async def metrics(session: Session) -> Response:
+    """Метрики Prometheus для администратора в браузере. Prometheus опрашивает тот же
+    набор с внутреннего порта WEB_METRICS_PORT, без входа и без Caddy
+    """
+    await refresh(session)
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @router.get("/api/v1/monitor")

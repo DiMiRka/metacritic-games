@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     # Серверный секрет для HMAC CSRF-токенов, обязателен в prod: openssl rand -hex 32.
     # В dev без него берётся случайный на время жизни процесса
     secret_key: str = ""
+    # Прежние SECRET_KEY через запятую на время смены ключа: ими расшифровываются секреты TOTP
+    # и принимаются CSRF-токены уже открытых страниц
+    secret_key_previous: str = ""
 
     # json в контейнерах, text для чтения глазами при локальной разработке
     log_format: Literal["text", "json"] = "text"
@@ -55,8 +58,9 @@ class Settings(BaseSettings):
     worker_shutdown_grace_seconds: float = 30.0
     # Файл, который воркер обновляет после каждого удачного heartbeat, для healthcheck в compose
     worker_health_file: str = ""
-    # Порт метрик Prometheus воркера во внутренней сети, 0: не поднимать
+    # Порты метрик Prometheus во внутренней сети, 0: не поднимать
     worker_metrics_port: int = 0
+    web_metrics_port: int = 0
 
     # Автоматы защиты от массового сбоя
     breaker_metacritic_threshold: int = 5
@@ -66,6 +70,8 @@ class Settings(BaseSettings):
     breaker_probe_seconds: float = 60.0
 
     session_ttl_hours: int = 12
+    # Сессия без активности дольше этого закрывается, 0: только абсолютный срок
+    session_idle_minutes: int = 60
     # Неудачные попытки с одного IP под одним логином, после них вход с этого IP закрыт на окно
     login_max_attempts: int = 5
     login_window_minutes: int = 15
@@ -128,6 +134,11 @@ class Settings(BaseSettings):
     @property
     def is_prod(self) -> bool:
         return self.env == "prod"
+
+    @property
+    def secret_keys(self) -> list[str]:
+        previous = [k.strip() for k in self.secret_key_previous.split(",") if k.strip()]
+        return [self.secret_key, *previous]
 
     @property
     def totp_required_for_admins(self) -> bool:

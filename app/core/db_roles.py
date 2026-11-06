@@ -46,7 +46,7 @@ WEB_READ_TABLES = (
     "jobs",
     "backup_runs",
 )
-WEB_WRITE_TABLES = ("users", "sessions", "login_attempts")
+WEB_WRITE_TABLES = ("users", "sessions", "login_attempts", "totp_recovery_codes")
 DML = "SELECT, INSERT, UPDATE, DELETE"
 
 # Должны совпадать с crawler.stages и jobs.queue, это проверяет тест

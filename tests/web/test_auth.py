@@ -170,6 +170,13 @@ async def test_public_pages_stay_open(make_client) -> None:
             assert (await client.get(path)).status_code == 200
 
 
+async def test_viewer_does_not_see_admin_links(make_client) -> None:
+    async with make_client("viewer") as viewer:
+        page = (await viewer.get("/")).text
+    assert 'href="/monitor"' not in page
+    assert 'href="/metrics"' not in page
+
+
 async def test_nav_depends_on_role(make_client) -> None:
     async with make_client() as anonymous:
         anon = (await anonymous.get("/")).text
@@ -178,9 +185,11 @@ async def test_nav_depends_on_role(make_client) -> None:
         csrf = admin.headers["X-CSRF-Token"]
 
     assert 'href="/monitor"' not in anon
+    assert 'href="/metrics"' not in anon
     assert 'href="/login"' in anon
     assert 'name="csrf-token"' not in anon
     assert 'href="/monitor"' in page
+    assert 'href="/metrics"' in page
     assert f'<meta name="csrf-token" content="{csrf}">' in page
     assert f'"X-CSRF-Token": "{csrf}"' in page
 
@@ -316,10 +325,12 @@ async def test_failed_series_logged_and_shown_in_monitor(
 
 async def enable_totp(session_factory, user_id: int) -> str:
     from app.auth import totp
+    from app.auth.service import seal_totp_secret
 
     secret = totp.new_secret()
+    sealed = seal_totp_secret(user_id, secret)
     async with session_factory() as db, db.begin():
-        await db.execute(update(User).where(User.id == user_id).values(totp_secret=secret))
+        await db.execute(update(User).where(User.id == user_id).values(totp_secret=sealed))
     return secret
 
 

@@ -72,8 +72,12 @@ services:
     environment:
       <<: *common-env
       DATABASE_URL: postgresql+asyncpg://app_web:${APP_WEB_DB_PASSWORD:?задайте APP_WEB_DB_PASSWORD в .env}@db:5432/${POSTGRES_DB}
-      # Секрет HMAC для CSRF-токенов, только у web
+      # Секрет HMAC для CSRF-токенов и ключ шифрования секретов TOTP, только у web
       SECRET_KEY:
+      SECRET_KEY_PREVIOUS:
+      SESSION_IDLE_MINUTES:
+      # Метрики из базы для Prometheus, порт открыт только во внутренней сети backend
+      WEB_METRICS_PORT: ${WEB_METRICS_PORT:-9101}
       MANUAL_RUN_COOLDOWN_MINUTES:
       SESSION_TTL_HOURS:
       LOGIN_MAX_ATTEMPTS:
@@ -199,13 +203,17 @@ services:
         condition: service_completed_successfully
 
   # Копии во внешнее хранилище (S3, Backblaze B2, Яндекс Object Storage…) через rclone.
-  # Включается профилем: docker compose --profile offsite up -d
+  # Перед отправкой каждый дамп шифруется age открытым ключом, закрытый ключ хранится вне
+  # сервера. Включается профилем: docker compose --profile offsite up -d
   backup-offsite:
-    image: rclone/rclone:1.68.2
+    image: ${IMAGE_PREFIX:-ghcr.io/dimirka/metacritic-games}-offsite:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      target: offsite
     profiles: [offsite]
-    entrypoint: ["sh", "-c", "while true; do rclone copy /backups \"$$BACKUP_REMOTE\" --include 'metacritic-*.dump' --log-level NOTICE; sleep 3600; done"]
     environment:
       BACKUP_REMOTE: ${BACKUP_REMOTE:-offsite:metacritic-backups}
+      BACKUP_AGE_RECIPIENTS:
       RCLONE_CONFIG_OFFSITE_TYPE: s3
       RCLONE_CONFIG_OFFSITE_PROVIDER:
       RCLONE_CONFIG_OFFSITE_ENDPOINT:

@@ -1,5 +1,7 @@
 """Фабрика веб-приложения: uvicorn app.web.app:create_app --factory"""
 
+import asyncio
+import contextlib
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -9,17 +11,21 @@ from fastapi import FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from loguru import logger
+from prometheus_client import start_http_server
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.auth.service import rekey_totp_secrets
 from app.core.config import Settings
 from app.core.config import settings as default_settings
 from app.core.db import Database
 from app.core.logs import configure_logging, log_context
 from app.core.sentry import init_sentry
+from app.monitoring.metrics import refresh_forever
 from app.web.deps import LoginRequiredError, wants_html
 from app.web.middleware.csrf import OriginCheckMiddleware
 from app.web.middleware.security_headers import SecurityHeadersMiddleware
-from app.web.routes import admin, auth, legacy, metrics, public
+from app.web.routes import admin, auth, legacy, public
 from app.web.templating import WEB_DIR, build_templates, templates_of
 
 HTML_ERRORS = {
@@ -36,10 +42,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     init_sentry("web")
     app.state.db = Database(config.database_url)
+    await _rekey_secrets(app.state.db)
+    refresher = None
+    if config.web_metrics_port:
+        # Отдельный порт во внутренней сети: через Caddy он недоступен
+        start_http_server(config.web_metrics_port)
+        refresher = asyncio.create_task(refresh_forever(app.state.db.session_factory))
+        logger.info("метрики web на порту {}", config.web_metrics_port)
     try:
         yield
     finally:
+        if refresher:
+            refresher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await refresher
         await app.state.db.dispose()
+
+
+async def _rekey_secrets(db: Database) -> None:
+    """Секреты TOTP в открытом виде или под прежним SECRET_KEY перешифровываются текущим"""
+    try:
+        async with db.session_factory() as session, session.begin():
+            changed, failed = await rekey_totp_secrets(session)
+        if changed:
+            logger.info("секреты TOTP перешифрованы текущим ключом: {}", changed)
+        if failed:
+            logger.error("секреты TOTP не расшифровать: {}, нужен SECRET_KEY_PREVIOUS", failed)
+    except Exception:
+        logger.exception("перешифровка секретов TOTP")
 
 
 async def login_required(request: Request, exc: LoginRequiredError) -> Response:
@@ -86,7 +116,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(public.router)
     app.include_router(auth.router)
     app.include_router(admin.router)
-    app.include_router(metrics.router)
     # Последним: старые адреса /api/... без версии
     app.include_router(legacy.router)
 

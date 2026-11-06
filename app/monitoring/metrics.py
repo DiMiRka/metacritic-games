@@ -1,12 +1,15 @@
 """Показатели из базы для Prometheus: общие для всех экземпляров, поэтому их отдаёт web.
+Отдаются с отдельного порта WEB_METRICS_PORT во внутренней сети, Caddy его не проксирует.
 Счётчики самого воркера (запросы к Metacritic, LLM, задачи) он отдаёт со своего порта
 """
 
+import asyncio
 import math
 
+from loguru import logger
 from prometheus_client import Gauge
 from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.crawler.models import Run, RunItemStatus, RunStatus, WorkerHeartbeat
 from app.jobs.models import Breaker, BreakerState, Job, JobKind, JobStatus
@@ -128,3 +131,19 @@ async def refresh(session: AsyncSession) -> None:
         .limit(1)
     )
     BACKUP_FAILED.set(1 if last_status == BackupStatus.FAILED else 0)
+
+
+REFRESH_SECONDS = 15
+
+
+async def refresh_forever(
+    session_factory: async_sessionmaker[AsyncSession], interval: float = REFRESH_SECONDS
+) -> None:
+    """Сервер метрик работает в своём потоке и базу не читает: значения обновляет этот цикл"""
+    while True:
+        try:
+            async with session_factory() as session:
+                await refresh(session)
+        except Exception:
+            logger.exception("метрики: не удалось обновить показатели из базы")
+        await asyncio.sleep(interval)

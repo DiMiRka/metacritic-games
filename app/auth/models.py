@@ -32,8 +32,9 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
     created_at: Mapped[datetime] = created_column()
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # Секрет TOTP в base32 и последний принятый шаг: один код дважды не проходит
-    totp_secret: Mapped[str | None] = mapped_column(String(64))
+    # Секрет TOTP, зашифрованный ключом из SECRET_KEY (app/auth/crypto.py), и последний
+    # принятый шаг: один код дважды не проходит
+    totp_secret: Mapped[str | None] = mapped_column(Text)
     totp_last_step: Mapped[int | None] = mapped_column(BigInteger)
 
     __table_args__ = (enum_check("role", UserRole),)
@@ -76,4 +77,23 @@ class LoginAttempt(Base):
     __table_args__ = (
         Index("ix_login_attempts_ip_login_at", "ip", "login", "attempted_at"),
         Index("ix_login_attempts_login_at", "login", "attempted_at"),
+    )
+
+
+class TotpRecoveryCode(Base):
+    """Одноразовый резервный код второго фактора. Код вида abcd-efgh-ijkl: первая группа
+    ищет запись, остальное хранится как хеш argon2
+    """
+
+    __tablename__ = "totp_recovery_codes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    lookup: Mapped[str] = mapped_column(String(8))
+    code_hash: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = created_column()
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("uq_totp_recovery_codes_user_id_lookup", "user_id", "lookup", unique=True),
     )

@@ -42,6 +42,12 @@ EXPOSE 8000
 # SSE мониторинга держит соединение открытым, без таймаута остановка ждала бы его вечно
 CMD ["uvicorn", "app.web.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*", "--timeout-graceful-shutdown", "5"]
 
+# Выгрузка бэкапов: rclone и age, шифрование открытым ключом перед отправкой
+FROM rclone/rclone:1.68.2 AS offsite
+RUN apk add --no-cache age
+COPY scripts/offsite.sh /usr/local/bin/offsite.sh
+ENTRYPOINT ["sh", "/usr/local/bin/offsite.sh"]
+
 FROM app AS worker
 COPY --from=deps-worker /opt/venv /opt/venv
 USER appuser

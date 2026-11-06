@@ -70,21 +70,53 @@ async def test_refresh_reads_queue_runs_and_errors(session_factory) -> None:
     assert sample("breaker_open", name="llm") == 1
 
 
-async def test_metrics_endpoint_internal_or_admin(make_client) -> None:
+async def test_metrics_only_for_admins(make_client) -> None:
+    """Частный адрес клиента доступа не даёт: только вход администратора"""
     async with make_client(ip="10.0.0.5") as internal:
-        ok = await internal.get("/metrics")
-    async with make_client(ip="8.8.8.8") as public:
-        hidden = await public.get("/metrics")
-    async with make_client("viewer", ip="8.8.4.4") as viewer:
-        viewer_hidden = await viewer.get("/metrics")
-    async with make_client("admin", ip="1.1.1.1") as admin:
-        admin_ok = await admin.get("/metrics")
+        anonymous_api = await internal.get("/metrics")
+        anonymous_html = await internal.get("/metrics", headers={"Accept": "text/html"})
+    async with make_client("viewer", ip="10.0.0.6") as viewer:
+        viewer_response = await viewer.get("/metrics")
+    async with make_client("admin", ip="8.8.8.8") as admin:
+        admin_response = await admin.get("/metrics")
 
-    assert ok.status_code == 200
-    assert "jobs_queue" in ok.text
-    assert ok.headers["content-type"].startswith("text/plain")
-    assert (hidden.status_code, viewer_hidden.status_code) == (404, 404)
-    assert admin_ok.status_code == 200
+    assert anonymous_api.status_code == 401
+    assert anonymous_html.status_code == 303
+    assert anonymous_html.headers["location"] == "/login?next=/metrics"
+    assert viewer_response.status_code == 403
+    assert admin_response.status_code == 200
+    assert admin_response.headers["content-type"].startswith("text/plain")
+    assert "jobs_queue" in admin_response.text
+
+
+async def test_refresh_forever_updates_and_survives_errors(session_factory, monkeypatch) -> None:
+    import asyncio
+    import contextlib
+
+    from app.monitoring import metrics
+
+    calls = []
+    original = metrics.refresh
+
+    async def flaky(session):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("база недоступна")
+        await original(session)
+
+    async def stop_after_two(_):
+        if len(calls) >= 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(metrics, "refresh", flaky)
+    monkeypatch.setattr(metrics.asyncio, "sleep", stop_after_two)
+    async with session_factory() as session, session.begin():
+        session.add(WorkerHeartbeat(worker="w", status="idle"))
+
+    with contextlib.suppress(asyncio.CancelledError):
+        await metrics.refresh_forever(session_factory)
+    assert len(calls) == 2
+    assert sample("crawler_worker_heartbeat_age_seconds") < 60
 
 
 async def test_request_id_header(make_client) -> None:

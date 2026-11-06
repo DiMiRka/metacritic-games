@@ -62,9 +62,12 @@ async def test_cli_totp_enable_requires_valid_code(monkeypatch, session_factory,
     monkeypatch.setattr(users_cli, "open_session", session_factory)
     monkeypatch.setattr(users_cli, "ask_code", answer)
     await users_cli.enable_totp("root")
+    out = capsys.readouterr().out
     async with session_factory() as db:
         user = await db.get(User, user_id)
-    assert user.totp_secret and user.totp_last_step
+    assert user.totp_secret.startswith("v1.") and user.totp_last_step
+    assert "Резервные коды" in out
+    assert out.count("-") >= 20
 
     await users_cli.disable_totp("root")
     async with session_factory() as db:

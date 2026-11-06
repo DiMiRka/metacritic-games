@@ -5,12 +5,19 @@
 
 import getpass
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import totp
-from app.auth.models import User, UserRole
-from app.auth.service import hash_password, normalize_login, revoke_user_sessions
+from app.auth.models import TotpRecoveryCode, User, UserRole
+from app.auth.service import (
+    hash_password,
+    issue_recovery_codes,
+    normalize_login,
+    rekey_totp_secrets,
+    revoke_user_sessions,
+    seal_totp_secret,
+)
 from app.core.db import default_database
 
 
@@ -73,8 +80,40 @@ async def enable_totp(login: str) -> None:
         raise SystemExit("Код не подошёл, второй фактор не включён")
     async with open_session() as db, db.begin():
         user = await _user(db, login)
-        user.totp_secret, user.totp_last_step = secret, step
+        user.totp_secret = seal_totp_secret(user.id, secret)
+        user.totp_last_step = step
+        codes = await issue_recovery_codes(db, user.id)
     print(f"Второй фактор для {login} включён")
+    print_recovery_codes(codes)
+
+
+def print_recovery_codes(codes: list[str]) -> None:
+    print("Резервные коды на случай потери телефона, каждый действует один раз.")
+    print("Сохраните их вне сервера, повторно они не показываются:")
+    for code in codes:
+        print(f"  {code}")
+
+
+async def new_recovery_codes(login: str) -> None:
+    """Новый набор резервных кодов, прежние перестают действовать"""
+    login = normalize_login(login)
+    async with open_session() as db, db.begin():
+        user = await _user(db, login)
+        if not user.totp_secret:
+            raise SystemExit(
+                f"У {login} второй фактор не включён: python -m app users totp {login}"
+            )
+        codes = await issue_recovery_codes(db, user.id)
+    print_recovery_codes(codes)
+
+
+async def rekey() -> None:
+    """Перешифровать секреты TOTP текущим SECRET_KEY, обычно это делает web при старте"""
+    async with open_session() as db, db.begin():
+        changed, failed = await rekey_totp_secrets(db)
+    print(f"Перешифровано секретов: {changed}, не удалось расшифровать: {failed}")
+    if failed:
+        raise SystemExit(1)
 
 
 async def disable_totp(login: str) -> None:
@@ -82,5 +121,6 @@ async def disable_totp(login: str) -> None:
     async with open_session() as db, db.begin():
         user = await _user(db, login)
         user.totp_secret = user.totp_last_step = None
+        await db.execute(delete(TotpRecoveryCode).where(TotpRecoveryCode.user_id == user.id))
         await revoke_user_sessions(db, user.id)
     print(f"Второй фактор для {login} выключен, все его сессии завершены")

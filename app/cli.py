@@ -29,6 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     actions.add_parser("totp", help="включить второй фактор TOTP").add_argument("login")
     actions.add_parser("totp-off", help="выключить второй фактор TOTP").add_argument("login")
+    actions.add_parser(
+        "recovery-codes", help="новые резервные коды TOTP, прежние перестают действовать"
+    ).add_argument("login")
+    actions.add_parser("rekey", help="перешифровать секреты TOTP текущим SECRET_KEY")
     return parser
 
 
@@ -80,15 +84,19 @@ async def run(args: argparse.Namespace) -> None:
 
             await setup_roles()
         elif args.command == "users":
-            from app.auth.cli import create_admin, disable_totp, enable_totp, set_password
+            from app.auth import cli as users
 
-            actions = {
-                "create-admin": create_admin,
-                "set-password": set_password,
-                "totp": enable_totp,
-                "totp-off": disable_totp,
-            }
-            await actions[args.action](args.login)
+            if args.action == "rekey":
+                await users.rekey()
+            else:
+                actions = {
+                    "create-admin": users.create_admin,
+                    "set-password": users.set_password,
+                    "totp": users.enable_totp,
+                    "totp-off": users.disable_totp,
+                    "recovery-codes": users.new_recovery_codes,
+                }
+                await actions[args.action](args.login)
     finally:
         await dispose_default_database()
 

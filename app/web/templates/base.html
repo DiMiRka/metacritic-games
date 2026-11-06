@@ -16,7 +16,7 @@
       <a class="logo" href="/">Игры<span>Metacritic</span></a>
       <nav class="topnav">
         <a href="/">Каталог</a>
-        {% if auth and auth.is_admin %}<a href="/monitor">Мониторинг</a>{% endif %}
+        {% if auth and auth.is_admin %}<a href="/monitor">Мониторинг</a><a href="/metrics">Метрики</a>{% endif %}
         {% if show_docs %}<a href="/docs">API</a>{% endif %}
         {% if auth %}
           <form class="logout" method="post" action="/logout">
