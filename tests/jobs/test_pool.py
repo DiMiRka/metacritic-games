@@ -185,3 +185,41 @@ async def test_gate_defers_without_attempt(session_factory) -> None:
         await asyncio.sleep(0.3)
     assert calls == 0
     assert (await statuses(session_factory))[job_id] == ("queued", 0)
+
+
+async def test_job_logs_carry_context_and_dead_is_error(session_factory, log_records) -> None:
+    from loguru import logger
+    from prometheus_client import REGISTRY
+
+    async with session_factory() as s, s.begin():
+        await enqueue(s, "embed", {"slug": "elden-ring", "game_id": 5})
+    before = (
+        REGISTRY.get_sample_value("jobs_finished_total", {"kind": "embed", "status": "dead"}) or 0
+    )
+
+    async def handler(job):
+        logger.info("внутри задачи")
+        raise PermanentError("нет игры")
+
+    finishes: list[Finish] = []
+
+    async def on_finish(session, job, finish):
+        finishes.append(finish)
+
+    pool = make_pool(session_factory, handler, on_finish=on_finish)
+    async with running(pool):
+
+        async def finished():
+            return bool(finishes)
+
+        await wait_until(finished)
+
+    inside = next(r for r in log_records if r["message"] == "внутри задачи")
+    assert inside["extra"]["slug"] == "elden-ring"
+    assert inside["extra"]["game_id"] == 5
+    assert inside["extra"]["kind"] == "embed"
+    dead = next(r for r in log_records if "dead после" in r["message"])
+    assert dead["level"].name == "ERROR"
+    assert dead["exception"] is not None
+    after = REGISTRY.get_sample_value("jobs_finished_total", {"kind": "embed", "status": "dead"})
+    assert after == before + 1

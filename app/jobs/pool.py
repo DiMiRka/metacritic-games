@@ -2,20 +2,32 @@
 
 import asyncio
 import contextlib
-import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from loguru import logger
+from prometheus_client import Counter, Histogram
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.logs import log_context
 from app.jobs.errors import classify
 from app.jobs.models import JobStatus
 from app.jobs.queue import ClaimedJob, claim, complete, extend_lease, fail, release
 
-log = logging.getLogger(__name__)
+JOBS_FINISHED = Counter(
+    "jobs_finished_total",
+    "Завершённые попытки задач: done, queued (повтор), dead",
+    ["kind", "status"],
+)
+JOB_SECONDS = Histogram(
+    "job_duration_seconds",
+    "Время выполнения задачи",
+    ["kind"],
+    buckets=(0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
+)
 
 
 @dataclass(frozen=True)
@@ -109,7 +121,7 @@ class JobPool:
             async with self.session_factory() as session, session.begin():
                 return await claim(session, self.worker, self.kinds, limit, self.lease)
         except Exception:
-            log.exception("pool %s: не удалось взять задачи", self.name)
+            logger.exception("pool {}: не удалось взять задачи", self.name)
             return []
 
     async def _renew(self, job: ClaimedJob) -> None:
@@ -118,12 +130,24 @@ class JobPool:
             try:
                 async with self.session_factory() as session, session.begin():
                     if not await extend_lease(session, job.id, self.worker, self.lease):
-                        log.warning("job %s: аренда потеряна", job.id)
+                        logger.warning("job {}: аренда потеряна", job.id)
                         return
             except Exception:
-                log.exception("job %s: не удалось продлить аренду", job.id)
+                logger.exception("job {}: не удалось продлить аренду", job.id)
 
     async def _execute(self, job: ClaimedJob) -> None:
+        payload = job.payload or {}
+        context = log_context(
+            job_id=job.id,
+            kind=job.kind,
+            run_id=job.run_id,
+            slug=payload.get("slug"),
+            game_id=payload.get("game_id"),
+        )
+        with context:
+            await self._execute_in_context(job)
+
+    async def _execute_in_context(self, job: ClaimedJob) -> None:
         if self.gate and (until := await self.gate(job)):
             async with self.session_factory() as session, session.begin():
                 await release(session, job.id, self.worker, run_after=until)
@@ -136,7 +160,7 @@ class JobPool:
             result = await self.types[job.kind].handler(job)
         except Exception as exc:
             error = exc
-            log.warning("job %s %s: %r", job.id, job.kind, exc)
+            logger.warning("job {} {}: {!r}", job.id, job.kind, exc)
         finally:
             renew.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -147,7 +171,7 @@ class JobPool:
             try:
                 await self.on_outcome(job, error)
             except Exception:
-                log.exception("job %s: ошибка в on_outcome", job.id)
+                logger.exception("job {}: ошибка в on_outcome", job.id)
 
     async def _finish(
         self, job: ClaimedJob, result: Any, error: Exception | None, duration_ms: int
@@ -164,13 +188,20 @@ class JobPool:
                     text = f"{classified.reason}: {error}"
                     status = await fail(session, job, self.worker, text, classified.retryable)
                 if status is None:
-                    log.warning("job %s: аренду забрал другой воркер, итог отброшен", job.id)
+                    logger.warning("job {}: аренду забрал другой воркер, итог отброшен", job.id)
                     return
+                JOBS_FINISHED.labels(job.kind, status).inc()
+                JOB_SECONDS.labels(job.kind).observe(duration_ms / 1000)
+                if status == JobStatus.DEAD:
+                    # ERROR уходит и в Sentry: dead-задачу без вмешательства уже не повторят
+                    logger.opt(exception=error).error(
+                        "job {} {}: dead после {} попыток", job.id, job.kind, job.attempts
+                    )
                 if hook:
                     await hook(session, job, Finish(status, result, error, duration_ms))
         except Exception:
             # Задача останется running, сборщик вернёт её в очередь по истечении аренды
-            log.exception("job %s: не удалось записать итог", job.id)
+            logger.exception("job {}: не удалось записать итог", job.id)
 
     async def drain(self, grace: float) -> None:
         """Ждёт текущие задачи, оставшиеся отменяет и возвращает в очередь без траты попытки"""
@@ -186,4 +217,4 @@ class JobPool:
         async with self.session_factory() as session, session.begin():
             for task in pending:
                 await release(session, jobs[task].id, self.worker)
-        log.info("pool %s: возвращено в очередь %d задач", self.name, len(pending))
+        logger.info("pool {}: возвращено в очередь {} задач", self.name, len(pending))

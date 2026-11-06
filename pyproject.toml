@@ -18,6 +18,9 @@ dependencies = [
     "fastembed>=0.9",
     "argon2-cffi>=25.1",
     "python-multipart>=0.0.20",
+    "loguru>=0.7.3",
+    "prometheus-client>=0.21",
+    "sentry-sdk[fastapi]>=2.19",
 ]
 
 [project.optional-dependencies]

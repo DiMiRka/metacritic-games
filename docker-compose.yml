@@ -14,6 +14,10 @@ x-app: &app
 x-common-env: &common-env
   ENV:
   TIMEZONE:
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+  LOG_LEVEL:
+  SENTRY_DSN:
+  SENTRY_TRACES_SAMPLE_RATE:
 
 services:
   db:
@@ -98,6 +102,8 @@ services:
       HF_HOME: /srv/data/models/hf
       # Воркер обновляет файл после каждого удачного heartbeat в базу
       WORKER_HEALTH_FILE: /tmp/worker-alive
+      # Метрики процесса воркера, порт открыт только во внутренней сети backend
+      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9100}
       BATCH_SIZE:
       CRAWL_INTERVAL_MINUTES:
       MANUAL_RUN_COOLDOWN_MINUTES:
@@ -148,6 +154,54 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Метрики и тревоги. Интерфейсы открыты только на 127.0.0.1 сервера: ssh -L 9090:localhost:9090
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    # backend: опрос web и worker, ops: Alertmanager и порт для туннеля
+    networks: [backend, ops]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    restart: unless-stopped
+    depends_on:
+      - web
+      - worker
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    entrypoint: ["sh", "/etc/alertmanager/entrypoint.sh"]
+    # Токен и чат только здесь: ни web, ни worker их не видят
+    environment:
+      TELEGRAM_BOT_TOKEN:
+      TELEGRAM_CHAT_ID:
+    volumes:
+      - ./monitoring/alertmanager-entrypoint.sh:/etc/alertmanager/entrypoint.sh:ro
+      - alertmanager_data:/alertmanager
+    tmpfs:
+      - /tmp
+    ports:
+      - "127.0.0.1:9093:9093"
+    # ops не internal: Alertmanager ходит в api.telegram.org
+    networks: [ops]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    restart: unless-stopped
+
   caddy:
     image: caddy:2
     environment:
@@ -178,9 +232,13 @@ networks:
   frontend:
     internal: true
   egress: {}
+  # Prometheus и Alertmanager
+  ops: {}
 
 volumes:
   pgdata:
   models:
   caddy_data:
   caddy_config:
+  prometheus_data:
+  alertmanager_data:

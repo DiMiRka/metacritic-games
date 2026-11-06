@@ -1,9 +1,9 @@
 """Этапы обхода как задачи очереди: collect → scrape_game → summarize и embed"""
 
-import logging
 from dataclasses import dataclass
 from datetime import datetime
 
+from loguru import logger
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -11,6 +11,7 @@ from app.catalog.models import Game, ReviewSource
 from app.core.clock import day_bounds, now_tz
 from app.core.config import settings
 from app.core.errors import PermanentError
+from app.core.logs import log_context
 from app.crawler.cursor import Cursor, collect_batch
 from app.crawler.lock import try_lock, unlock
 from app.crawler.models import CrawlPhase, CrawlState, RunItemStage, RunItemStatus
@@ -33,8 +34,6 @@ from app.jobs.pool import Finish, JobType
 from app.jobs.queue import ClaimedJob, enqueue
 from app.scraper.client import MetacriticClient
 from app.scraper.parsers import Review, parse_listing
-
-log = logging.getLogger(__name__)
 
 COLLECT_DEDUPE_KEY = "collect"
 MANUAL_COLLECT_PRIORITY = 100
@@ -188,14 +187,15 @@ class CrawlStages:
             locked = await try_lock(lock_conn)
             await lock_conn.commit()
             if not locked:
-                log.info("collect: блокировка занята, пропускаю")
+                logger.info("collect: блокировка занята, пропускаю")
                 return None
             try:
                 run_id = await create_run(
                     self.session_factory, job.payload.get("trigger", "schedule"), job.requested_by
                 )
                 try:
-                    await self._collect(job, run_id)
+                    with log_context(run_id=run_id):
+                        await self._collect(job, run_id)
                 except Exception:
                     await fail_run(self.session_factory, run_id)
                     raise
@@ -242,7 +242,9 @@ class CrawlStages:
                     dedupe_key=f"scrape:{slug}:{today.isoformat()}",
                     run_id=run_id,
                 )
-        log.info("run %s: %d игр, курсор %s/%s", run_id, len(slugs), cursor.phase, cursor.next_page)
+        logger.info(
+            "run {}: {} игр, курсор {}/{}", run_id, len(slugs), cursor.phase, cursor.next_page
+        )
 
     async def _collect_finished(self, session: AsyncSession, job: ClaimedJob, finish: Finish):
         if finish.error is None and finish.result is not None:

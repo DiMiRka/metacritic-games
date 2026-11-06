@@ -2,7 +2,6 @@
 
 import hashlib
 import hmac
-import logging
 import math
 import secrets
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from enum import StrEnum
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
+from loguru import logger
 from sqlalchemy import delete, distinct, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,8 +18,6 @@ from app.auth import totp
 from app.auth.models import LoginAttempt, User, UserRole, UserSession
 from app.core.clock import now_tz
 from app.core.config import settings
-
-log = logging.getLogger(__name__)
 
 MIN_PASSWORD_LENGTH = 12
 LOGIN_MAX_LENGTH = 100
@@ -146,8 +144,8 @@ async def record_failed_attempt(db: AsyncSession, ip: str, login: str) -> None:
         )
     ).one()
     if count % settings.login_alert_threshold == 0:
-        log.warning(
-            "серия неудачных входов: логин %r, %d попыток с %d адресов за %d мин",
+        logger.warning(
+            "серия неудачных входов: логин {!r}, {} попыток с {} адресов за {} мин",
             login,
             count,
             ips,

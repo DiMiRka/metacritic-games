@@ -1,3 +1,6 @@
+import secrets
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request
@@ -7,15 +10,27 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
+from app.core.logs import configure_logging, log_context
+from app.core.sentry import init_sentry
 from app.web.deps import LoginRequiredError, wants_html
 from app.web.middleware.csrf import OriginCheckMiddleware
 from app.web.middleware.security_headers import SecurityHeadersMiddleware
-from app.web.routes import admin, auth, public
+from app.web.routes import admin, auth, metrics, public
 from app.web.templating import WEB_DIR, templates
 
 # В проде документация API не публикуется
 docs = {} if not settings.is_prod else {"docs_url": None, "redoc_url": None, "openapi_url": None}
-app = FastAPI(title="Metacritic Games", **docs)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # uvicorn настраивает свои логгеры до импорта приложения, перехватываем их здесь
+    configure_logging()
+    init_sentry("web")
+    yield
+
+
+app = FastAPI(title="Metacritic Games", lifespan=lifespan, **docs)
 app.add_middleware(OriginCheckMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
@@ -23,6 +38,19 @@ app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 app.include_router(public.router)
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(metrics.router)
+
+
+@app.middleware("http")
+async def request_context(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """request_id в каждой строке лога запроса и в заголовке ответа"""
+    request_id = secrets.token_hex(6)
+    with log_context(request_id=request_id):
+        response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 @app.exception_handler(LoginRequiredError)

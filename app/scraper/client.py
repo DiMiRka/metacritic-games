@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import random
 import time
 from datetime import UTC, datetime
@@ -7,10 +6,10 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
+from loguru import logger
+from prometheus_client import Counter, Histogram
 
 from app.core.config import settings
-
-log = logging.getLogger(__name__)
 
 BASE_URL = "https://backend.metacritic.com"
 NEW_RELEASES_LIMIT = 20
@@ -20,6 +19,14 @@ USER_PAGE_SIZE = 30
 MAX_RETRY_AFTER = 120.0
 
 _GAMES_FINDER = {"sortBy": "-releaseDate", "mcoTypeId": 13}
+
+# Каждая попытка, включая повторы: status — код ответа или error при сетевом сбое
+REQUESTS = Counter("metacritic_requests_total", "Запросы к Metacritic по кодам ответа", ["status"])
+REQUEST_SECONDS = Histogram(
+    "metacritic_request_duration_seconds",
+    "Время ответа Metacritic",
+    buckets=(0.1, 0.25, 0.5, 1, 2, 5, 10, 30),
+)
 
 
 def parse_retry_after(value: str | None, now: datetime | None = None) -> float | None:
@@ -82,22 +89,26 @@ class MetacriticClient:
         for attempt in range(self._max_retries + 1):
             last = attempt == self._max_retries
             await self._throttle()
+            started = time.monotonic()
             try:
                 response = await self._http.get(path, params=params)
             except httpx.TransportError as exc:
+                REQUESTS.labels("error").inc()
                 if last:
                     raise
                 pause = self._backoff_delay(attempt)
-                log.warning("GET %s failed (%s), retry in %.1fs", path, exc, pause)
+                logger.warning("GET {} failed ({}), retry in {:.1f}s", path, exc, pause)
                 await asyncio.sleep(pause)
                 continue
 
+            REQUEST_SECONDS.observe(time.monotonic() - started)
+            REQUESTS.labels(str(response.status_code)).inc()
             if response.status_code == 429 or response.status_code >= 500:
                 if last:
                     response.raise_for_status()
                 retry_after = parse_retry_after(response.headers.get("Retry-After"))
                 pause = self._backoff_delay(attempt) if retry_after is None else retry_after
-                log.warning("GET %s -> %s, retry in %.1fs", path, response.status_code, pause)
+                logger.warning("GET {} -> {}, retry in {:.1f}s", path, response.status_code, pause)
                 await asyncio.sleep(pause)
                 continue
 

@@ -152,3 +152,27 @@ async def test_anthropic_summarizer_raises_on_refusal() -> None:
 
     with pytest.raises(SummaryError):
         await summarizer.summarize("G", ReviewSource.USER, [Review("ok", 1, None)])
+
+
+async def test_llm_latency_and_tokens_measured() -> None:
+    from prometheus_client import REGISTRY
+
+    def tokens(direction: str) -> float:
+        labels = {"model": "metrics-model", "direction": direction}
+        return REGISTRY.get_sample_value("llm_tokens_total", labels) or 0
+
+    def calls(outcome: str) -> float:
+        labels = {"model": "metrics-model", "outcome": outcome}
+        return REGISTRY.get_sample_value("llm_request_duration_seconds_count", labels) or 0
+
+    ok = FakeMessages(anthropic_response('{"likes": [], "dislikes": []}'))
+    summarizer = AnthropicSummarizer("key", "metrics-model", SimpleNamespace(messages=ok))
+    before = (tokens("input"), tokens("output"), calls("ok"), calls("error"))
+    await summarizer.summarize("G", ReviewSource.USER, [Review("ok", 1, None)])
+    broken = FakeMessages(anthropic_response("{}", stop_reason="max_tokens"))
+    failing = AnthropicSummarizer("key", "metrics-model", SimpleNamespace(messages=broken))
+    with pytest.raises(SummaryError):
+        await failing.summarize("G", ReviewSource.USER, [Review("ok", 1, None)])
+
+    after = (tokens("input"), tokens("output"), calls("ok"), calls("error"))
+    assert after == (before[0] + 1200, before[1] + 80, before[2] + 1, before[3] + 1)

@@ -1,8 +1,8 @@
 """Пересборка без нового обхода: игр из сырых ответов, резюме и эмбеддингов по сохранённым данным"""
 
-import logging
 from dataclasses import dataclass
 
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -10,8 +10,6 @@ from app.catalog.models import Game
 from app.core.errors import PermanentError
 from app.crawler.raw import load_latest
 from app.crawler.stages import Derived, enqueue_derived, store_bundle, stored_reviews
-
-log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,7 +56,7 @@ async def reparse_games(
                 report.rebuilt += 1
         except PermanentError as exc:
             report.failed += 1
-            log.warning("reparse %s: %s", game_slug, exc)
+            logger.warning("reparse {}: {}", game_slug, exc)
     return report
 
 

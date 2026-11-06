@@ -1,10 +1,10 @@
 import asyncio
-import logging
 from typing import Annotated, get_args
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from loguru import logger
 from sqlalchemy import text
 
 from app.catalog.queries import (
@@ -28,8 +28,6 @@ SORT_LABELS = {
     "userscore": "По оценке игроков",
     "title": "По названию",
 }
-
-log = logging.getLogger(__name__)
 
 HEALTH_DB_TIMEOUT = 3.0
 
@@ -66,7 +64,7 @@ async def health(session: Session) -> JSONResponse:
     try:
         await asyncio.wait_for(session.execute(text("SELECT 1")), HEALTH_DB_TIMEOUT)
     except Exception as exc:
-        log.warning("health: база недоступна: %r", exc)
+        logger.warning("health: база недоступна: {!r}", exc)
         return JSONResponse({"status": "unavailable", "db": "error"}, status_code=503)
     return JSONResponse({"status": "ok", "db": "ok"})
 

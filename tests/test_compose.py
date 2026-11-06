@@ -8,6 +8,7 @@ from app.core.config import Settings
 
 COMPOSE = yaml.safe_load((Path(__file__).parents[1] / "docker-compose.yml").read_text("utf-8"))
 SECRETS = {"ANTHROPIC_API_KEY", "LLM_API_KEY", "YOUTUBE_API_KEY"}
+TELEGRAM = {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
 ROLE_PASSWORDS = {"APP_WEB_DB_PASSWORD", "APP_WORKER_DB_PASSWORD", "POSTGRES_PASSWORD"}
 
 
@@ -34,3 +35,15 @@ def test_every_setting_reaches_some_service() -> None:
     passed = env("web") | env("worker") | env("migrate")
     missing = {name.upper() for name in Settings.model_fields} - passed
     assert not missing, f"добавьте в docker-compose.yml: {sorted(missing)}"
+
+
+def test_telegram_only_in_alertmanager() -> None:
+    assert env("alertmanager") == TELEGRAM
+    for name in ("web", "worker", "migrate", "prometheus"):
+        assert not TELEGRAM & env(name), name
+
+
+def test_monitoring_ports_only_on_loopback() -> None:
+    for name in ("prometheus", "alertmanager"):
+        for port in COMPOSE["services"][name]["ports"]:
+            assert port.startswith("127.0.0.1:"), (name, port)

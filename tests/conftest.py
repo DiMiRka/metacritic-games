@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import (
@@ -167,6 +168,23 @@ async def login_as(session_factory, user_id: int) -> str:
     async with session_factory() as db, db.begin():
         user = await db.get(User, user_id)
         return await create_session(db, user, "127.0.0.1", "pytest")
+
+
+@pytest.fixture
+def caplog(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
+    """Строки loguru тоже попадают в caplog"""
+    handler_id = logger.add(caplog.handler, format="{message}", level=0)
+    yield caplog
+    logger.remove(handler_id)
+
+
+@pytest.fixture
+def log_records() -> list:
+    """Записи loguru со всеми полями контекста"""
+    records: list = []
+    handler_id = logger.add(lambda message: records.append(message.record), level=0)
+    yield records
+    logger.remove(handler_id)
 
 
 @pytest.fixture(autouse=True)

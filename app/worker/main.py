@@ -2,13 +2,14 @@
 
 import asyncio
 import contextlib
-import logging
 import signal
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from loguru import logger
+from prometheus_client import start_http_server
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -27,8 +28,6 @@ from app.jobs.models import ACTIVE_STATUSES, Job, JobKind
 from app.jobs.pool import JobPool, JobType
 from app.jobs.queue import CHANNEL, reap_expired
 from app.scraper.client import MetacriticClient
-
-log = logging.getLogger("worker")
 
 HEARTBEAT_SECONDS = 15
 REAPER_SECONDS = 60
@@ -113,23 +112,23 @@ class Worker:
     async def schedule_collect(self) -> None:
         async with self.session_factory() as session, session.begin():
             job_id = await enqueue_collect(session, RunTrigger.SCHEDULE)
-        log.info("collect по расписанию: %s", job_id or "уже в очереди")
+        logger.info("collect по расписанию: {}", job_id or "уже в очереди")
 
     async def cleanup(self) -> None:
         try:
             await cleanup(self.session_factory)
         except Exception:
-            log.exception("очистка старых данных")
+            logger.exception("очистка старых данных")
 
     async def _reaper(self) -> None:
         while not self.stop.is_set():
             try:
                 async with self.session_factory() as session, session.begin():
                     if returned := await reap_expired(session):
-                        log.warning("сборщик: вернул %d задач с истёкшей арендой", returned)
+                        logger.warning("сборщик: вернул {} задач с истёкшей арендой", returned)
                         self.wake_all()
             except Exception:
-                log.exception("сборщик аренд")
+                logger.exception("сборщик аренд")
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.stop.wait(), REAPER_SECONDS)
 
@@ -167,7 +166,7 @@ class Worker:
             asyncio.create_task(self._reaper()),
         ]
         pool_tasks = [asyncio.create_task(pool.run(self.stop)) for pool in self.pools]
-        log.info("воркер %s: пулы %s", self.worker_id, [p.name for p in self.pools])
+        logger.info("воркер {}: пулы {}", self.worker_id, [p.name for p in self.pools])
         try:
             await self.stop.wait()
         finally:
@@ -191,6 +190,10 @@ def build_stages(client: MetacriticClient) -> CrawlStages:
 
 async def run_worker() -> None:
     """Обработка очереди и проход по расписанию до SIGTERM"""
+    if settings.worker_metrics_port:
+        # Отдельный поток: опрос Prometheus не зависит от занятости цикла событий
+        start_http_server(settings.worker_metrics_port)
+        logger.info("метрики воркера на порту {}", settings.worker_metrics_port)
     async with MetacriticClient() as client:
         worker = Worker(build_stages(client), SessionLocal, settings.worker_identity)
         loop = asyncio.get_running_loop()

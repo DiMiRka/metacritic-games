@@ -95,7 +95,10 @@ async def run(args: argparse.Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    if args.command in ("worker", "crawl"):
-        configure_logging()
+    configure_logging()
+    if args.command in ("worker", "crawl", "reparse", "refresh", "cleanup"):
+        from app.core.sentry import init_sentry
+
+        init_sentry("worker")
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(run(args))

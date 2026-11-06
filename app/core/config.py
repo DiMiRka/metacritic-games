@@ -13,6 +13,13 @@ class Settings(BaseSettings):
 
     env: Literal["dev", "prod"] = "dev"
 
+    # json в контейнерах, text для чтения глазами при локальной разработке
+    log_format: Literal["text", "json"] = "text"
+    log_level: str = "INFO"
+    # Пусто: отчёты об исключениях не отправляются
+    sentry_dsn: str = ""
+    sentry_traces_sample_rate: float = 0.0
+
     database_url: str = "postgresql+asyncpg://metacritic:metacritic@localhost:5432/metacritic"
     # Пароли ролей app_web и app_worker, их создаёт python -m app db-roles
     app_web_db_password: str = ""
@@ -44,6 +51,8 @@ class Settings(BaseSettings):
     worker_shutdown_grace_seconds: float = 30.0
     # Файл, который воркер обновляет после каждого удачного heartbeat, для healthcheck в compose
     worker_health_file: str = ""
+    # Порт метрик Prometheus воркера во внутренней сети, 0: не поднимать
+    worker_metrics_port: int = 0
 
     # Автоматы защиты от массового сбоя
     breaker_metacritic_threshold: int = 5

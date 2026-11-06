@@ -1,11 +1,9 @@
 import asyncio
 import contextlib
-import logging
 from collections.abc import Callable
 
 import asyncpg
-
-log = logging.getLogger(__name__)
+from loguru import logger
 
 RECONNECT_SECONDS = 5
 
@@ -21,7 +19,7 @@ async def listen(
         try:
             conn = await asyncpg.connect(dsn)
         except (OSError, asyncpg.PostgresError) as exc:
-            log.warning("LISTEN %s: нет соединения (%s)", channel, exc)
+            logger.warning("LISTEN {}: нет соединения ({})", channel, exc)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), RECONNECT_SECONDS)
             continue
@@ -29,7 +27,7 @@ async def listen(
         lost = asyncio.Event()
         conn.add_termination_listener(lambda _conn, lost=lost: lost.set())
         await conn.add_listener(channel, lambda _conn, _pid, _ch, payload: on_notify(payload))
-        log.info("LISTEN %s", channel)
+        logger.info("LISTEN {}", channel)
         # После переподключения могли пропасть уведомления, будим всех сразу
         on_notify("")
         waiters = [asyncio.create_task(stop.wait()), asyncio.create_task(lost.wait())]

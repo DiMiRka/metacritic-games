@@ -1,0 +1,48 @@
+groups:
+  - name: metacritic
+    rules:
+      - alert: WorkerHeartbeatStale
+        expr: crawler_worker_heartbeat_age_seconds > 120
+        labels:
+          severity: critical
+        annotations:
+          summary: "Воркер не присылал heartbeat {{ $value | humanizeDuration }}"
+
+      - alert: NoSuccessfulRun
+        expr: crawler_last_success_age_seconds > 2 * 3600
+        labels:
+          severity: critical
+        annotations:
+          summary: "Успешного прохода не было {{ $value | humanizeDuration }}"
+
+      # Порог 20% и минимум 10 этапов за час, чтобы одна ошибка на пустом часе не будила
+      - alert: HighErrorRate
+        expr: crawler_error_ratio_last_hour > 0.2 and on() sum(crawler_items_last_hour) >= 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Сдались {{ $value | humanizePercentage }} этапов за последний час"
+
+      - alert: MetacriticRateLimited
+        expr: increase(metacritic_requests_total{status="429"}[30m]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "Metacritic ответил 429 {{ $value | humanize }} раз за 30 минут"
+
+      - alert: CircuitBreakerOpen
+        expr: breaker_open == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Автомат {{ $labels.name }} открыт дольше 15 минут"
+
+      - alert: TargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus не может опросить {{ $labels.job }}"

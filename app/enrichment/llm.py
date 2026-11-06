@@ -1,18 +1,18 @@
-import logging
+import time
 from dataclasses import dataclass
 from html import escape
 from typing import Protocol
 
 from anthropic import AsyncAnthropic
+from loguru import logger
 from openai import AsyncOpenAI
+from prometheus_client import Counter, Histogram
 from pydantic import BaseModel, Field
 
 from app.catalog.models import ReviewSource
 from app.core.config import settings
 from app.core.errors import PermanentError
 from app.scraper.parsers import Review
-
-log = logging.getLogger(__name__)
 
 # Увеличить при любом изменении SYSTEM_PROMPT или OUTPUT_SCHEMA: старые резюме пересчитаются
 PROMPT_VERSION = 1
@@ -75,6 +75,41 @@ class SummaryError(PermanentError):
     pass
 
 
+LLM_SECONDS = Histogram(
+    "llm_request_duration_seconds",
+    "Время запроса резюме к LLM",
+    ["model", "outcome"],
+    buckets=(0.5, 1, 2, 5, 10, 20, 40, 60, 120),
+)
+LLM_TOKENS = Counter("llm_tokens_total", "Токены LLM", ["model", "direction"])
+
+
+def observe(model: str, started: float, summary: "Summary | None") -> None:
+    outcome = "ok" if summary is not None else "error"
+    LLM_SECONDS.labels(model, outcome).observe(time.monotonic() - started)
+    if summary is not None:
+        LLM_TOKENS.labels(model, "input").inc(summary.input_tokens or 0)
+        LLM_TOKENS.labels(model, "output").inc(summary.output_tokens or 0)
+
+
+class Measured:
+    """Замер времени и токенов вокруг summarize любого провайдера"""
+
+    model: str
+
+    async def summarize(self, title: str, source: ReviewSource, reviews: list[Review]) -> Summary:
+        started = time.monotonic()
+        summary = None
+        try:
+            summary = await self._summarize(title, source, reviews)
+            return summary
+        finally:
+            observe(self.model, started, summary)
+
+    async def _summarize(self, title: str, source: ReviewSource, reviews: list[Review]) -> Summary:
+        raise NotImplementedError
+
+
 class Summarizer(Protocol):
     model: str
 
@@ -94,14 +129,14 @@ def build_user_prompt(title: str, source: ReviewSource, reviews: list[Review]) -
     return f"Игра: {escape(title, quote=False)}\nОтзывы {who}:\n<reviews>\n{joined}\n</reviews>"
 
 
-class AnthropicSummarizer:
+class AnthropicSummarizer(Measured):
     def __init__(self, api_key: str, model: str, client: AsyncAnthropic | None = None) -> None:
         self.model = model
         self._client = client or AsyncAnthropic(
             api_key=api_key, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES
         )
 
-    async def summarize(self, title: str, source: ReviewSource, reviews: list[Review]) -> Summary:
+    async def _summarize(self, title: str, source: ReviewSource, reviews: list[Review]) -> Summary:
         response = await self._client.messages.create(
             model=self.model,
             max_tokens=4000,
@@ -123,7 +158,7 @@ class AnthropicSummarizer:
         )
 
 
-class OpenAICompatibleSummarizer:
+class OpenAICompatibleSummarizer(Measured):
     """Любой провайдер с OpenAI-совместимым API: Gemini, Groq, OpenRouter, Ollama, OpenAI"""
 
     def __init__(
@@ -138,7 +173,7 @@ class OpenAICompatibleSummarizer:
             api_key=api_key, base_url=base_url, timeout=REQUEST_TIMEOUT, max_retries=MAX_RETRIES
         )
 
-    async def summarize(self, title: str, source: ReviewSource, reviews: list[Review]) -> Summary:
+    async def _summarize(self, title: str, source: ReviewSource, reviews: list[Review]) -> Summary:
         response = await self._client.chat.completions.create(
             model=self.model,
             max_completion_tokens=4000,
@@ -166,12 +201,12 @@ class OpenAICompatibleSummarizer:
 def build_summarizer() -> Summarizer | None:
     if settings.llm_provider == "openai":
         if not settings.llm_api_key:
-            log.warning("LLM_API_KEY не задан, резюме отзывов отключены")
+            logger.warning("LLM_API_KEY не задан, резюме отзывов отключены")
             return None
         return OpenAICompatibleSummarizer(
             settings.llm_api_key, settings.summary_model, settings.llm_base_url or None
         )
     if not settings.anthropic_api_key:
-        log.warning("ANTHROPIC_API_KEY не задан, резюме отзывов отключены")
+        logger.warning("ANTHROPIC_API_KEY не задан, резюме отзывов отключены")
         return None
     return AnthropicSummarizer(settings.anthropic_api_key, settings.summary_model)

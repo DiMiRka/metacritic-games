@@ -116,3 +116,20 @@ def test_parse_retry_after() -> None:
     assert parse_retry_after("Thu, 05 Nov 2026 11:00:00 GMT", now) == 0
     assert parse_retry_after("soon") is None
     assert parse_retry_after(None) is None
+
+
+async def test_requests_counted_by_status() -> None:
+    from prometheus_client import REGISTRY
+
+    def value(status: str) -> float:
+        return REGISTRY.get_sample_value("metacritic_requests_total", {"status": status}) or 0
+
+    before = {s: value(s) for s in ("429", "200")}
+    handler, _ = sequence(
+        httpx.Response(429, headers={"Retry-After": "0"}), httpx.Response(200, json={})
+    )
+    async with make_client(handler) as client:
+        await client.get_json("/x")
+
+    assert value("429") == before["429"] + 1
+    assert value("200") == before["200"] + 1

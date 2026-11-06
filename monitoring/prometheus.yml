@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # Показатели из базы: очередь, проходы, heartbeat, доля ошибок, автоматы
+  - job_name: web
+    static_configs:
+      - targets: ["web:8000"]
+  # Счётчики процесса воркера: Metacritic, LLM, задачи
+  - job_name: worker
+    static_configs:
+      - targets: ["worker:9100"]

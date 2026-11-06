@@ -5,10 +5,10 @@
 оценок не трогаются: это данные сервиса, история хранит только изменения и растёт медленно
 """
 
-import logging
 from dataclasses import dataclass
 from datetime import timedelta
 
+from loguru import logger
 from sqlalchemy import Select, delete, exists, func, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
@@ -16,8 +16,6 @@ from sqlalchemy.orm import aliased
 from app.core.config import settings
 from app.crawler.models import CrawlState, RawPage, Run, RunStatus
 from app.jobs.models import ACTIVE_STATUSES, Job
-
-log = logging.getLogger(__name__)
 
 CHUNK = 5000
 
@@ -103,5 +101,5 @@ async def cleanup(
             session_factory, RawPage, _stale_raw_pages(now - timedelta(days=raw_days))
         )
 
-    log.info("очистка: %s", report)
+    logger.info("очистка: {}", report)
     return report

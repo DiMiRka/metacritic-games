@@ -29,6 +29,7 @@ app/
   cli.py        команды python -m app
 tests/          повторяют структуру app/, фикстуры ответов Metacritic в tests/fixtures
 migrations/     Alembic
+monitoring/     Prometheus: опрос и правила тревог, запуск Alertmanager с Telegram
 ```
 
 Зависимости идут в одну сторону: `web` и `worker` → предметные пакеты → `core`. `core` ни от кого не зависит, `web` никто не импортирует. Правила записаны в `tests/test_architecture.py`, новый импорт против них уронит тесты.
@@ -76,6 +77,85 @@ POST /api/runs ─────────┴─► collect ─► scrape_game �
 - **Экземпляры.** У каждого свой heartbeat (`WORKER_ID` или `hostname:pid`) со списком задач, которые он держит
 
 **Ограничение.** Лимит частоты запросов к Metacritic (1 в секунду) работает внутри процесса. Если запустить два процесса воркера, обрабатывающих `scrape_game`, частота удвоится. Поэтому `scrape_game` обрабатывает один процесс. По той же причине `python -m app crawl` при живом воркере только ставит ему `collect` и ждёт конца прохода, а свой обработчик поднимает, лишь когда живых воркеров нет. Остальные виды задач можно масштабировать отдельными экземплярами. Общий лимитер через базу — следующий шаг, если понадобится горизонтальное масштабирование.
+
+## Наблюдаемость
+
+**Логи.** Логи пишутся через loguru. В контейнерах формат JSON (`LOG_FORMAT=json`), каждая строка — один объект: `ts`, `level`, `logger`, `msg` и поля контекста. Контекст хранится в contextvars и не протекает между задачами:
+
+- задача воркера: `job_id`, `kind`, `run_id`, `slug` или `game_id`;
+- сбор кандидатов: `run_id` с момента создания прохода;
+- запрос к сайту: `request_id`, он же уходит в заголовке `X-Request-ID`.
+
+Стандартный `logging` (uvicorn, SQLAlchemy, APScheduler) перехватывается и идёт тем же путём. Все строки одного прохода находятся одним фильтром:
+
+```bash
+docker compose logs worker --no-log-prefix | jq 'select(.run_id == 12)'
+```
+
+Локально формат `text`: время, уровень, источник, сообщение и поля контекста в конце строки.
+
+**Метрики Prometheus.** Источников два.
+
+Счётчики процесса воркера отдаются на порту `9100`, он открыт только во внутренней сети `backend`:
+
+| Метрика | Что показывает |
+|---|---|
+| `metacritic_requests_total{status}` | запросы к Metacritic по кодам ответа, включая повторы (`status="429"`, `"error"` при сетевом сбое) |
+| `metacritic_request_duration_seconds` | время ответа Metacritic |
+| `llm_request_duration_seconds{model,outcome}` | задержка запросов к LLM, отдельно удачные и с ошибкой |
+| `llm_tokens_total{model,direction}` | токены на входе и выходе |
+| `jobs_finished_total{kind,status}`, `job_duration_seconds{kind}` | итоги и время задач |
+
+Показатели из базы общие для всех экземпляров. Их отдаёт web на `/metrics` и пересчитывает при каждом опросе:
+
+| Метрика | Что показывает |
+|---|---|
+| `jobs_queue{kind,status}` | длина очереди: queued, running, dead |
+| `crawler_last_run_duration_seconds` | длительность последнего прохода |
+| `crawler_current_run_seconds` | длительность текущего прохода |
+| `crawler_last_success_age_seconds` | возраст последнего успешного прохода |
+| `crawler_worker_heartbeat_age_seconds` | возраст последнего heartbeat любого воркера |
+| `crawler_items_last_hour{status}`, `crawler_error_ratio_last_hour` | итоги этапов за час и доля сдавшихся |
+| `breaker_open{name}` | открыт ли автомат |
+
+`/metrics` открыт только из внутренней сети (так его опрашивает Prometheus) и администраторам, остальным он отвечает 404. Снаружи всё идёт через Caddy, а Caddy подставляет настоящий адрес клиента, поэтому внутренний адрес из интернета не подделать.
+
+**Тревоги.** Prometheus и Alertmanager входят в `docker-compose.yml`. Правила лежат в `monitoring/alerts.yml`:
+
+| Тревога | Условие |
+|---|---|
+| `WorkerHeartbeatStale` | heartbeat старше 2 минут, в том числе после штатной остановки |
+| `NoSuccessfulRun` | нет успешного прохода больше 2 часов |
+| `HighErrorRate` | больше 20% этапов за час сдались (при хотя бы 10 этапах), держится 10 минут |
+| `MetacriticRateLimited` | больше 5 ответов 429 за 30 минут |
+| `CircuitBreakerOpen` | автомат открыт дольше 15 минут |
+| `TargetDown` | Prometheus не может опросить web или worker 2 минуты |
+
+Порог доли ошибок меняется прямо в `monitoring/alerts.yml`.
+
+Чтобы тревоги приходили в Telegram:
+
+1. Создать бота у @BotFather.
+2. Написать боту или добавить его в группу.
+3. Взять id чата из `https://api.telegram.org/bot<токен>/getUpdates` (поле `chat.id`).
+4. Вписать `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID` в `.env`.
+
+Токен получает только Alertmanager: конфиг собирается при его старте (`monitoring/alertmanager-entrypoint.sh`), в репозитории токена нет. Без токена тревоги видны только в интерфейсе Alertmanager.
+
+Интерфейсы Prometheus и Alertmanager опубликованы только на `127.0.0.1` сервера. С рабочей машины к ним можно подключиться через SSH-туннель:
+
+```bash
+ssh -L 9090:localhost:9090 -L 9093:localhost:9093 root@IP_СЕРВЕРА
+```
+
+После этого они открываются на `http://localhost:9090` и `http://localhost:9093`.
+
+**Исключения.** При заданном `SENTRY_DSN` web и worker отправляют события в Sentry или совместимый сервис (GlitchTip, self-hosted Sentry):
+
+- web — необработанные исключения запросов;
+- web и worker — любые строки лога уровня ERROR, в том числе `logger.exception` и задачи, ушедшие в `dead`.
+
+Поля контекста (`run_id`, `job_id`, `slug`, `request_id`) становятся тегами события. Персональные данные не отправляются (`send_default_pii=False`). Трассировка выключена, её включает `SENTRY_TRACES_SAMPLE_RATE`.
 
 ## Данные
 
@@ -169,6 +249,8 @@ nano .env
 | `APP_WEB_DB_PASSWORD`, `APP_WORKER_DB_PASSWORD` | ещё два сгенерированных пароля (только hex, они попадают в URL базы) |
 | `DOMAIN` | IP сервера через дефисы + `.sslip.io`, например `203-0-113-10.sslip.io` |
 | `LLM_PROVIDER`, `SUMMARY_MODEL`, ключи | как в разделе про LLM в `.env.example` |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | для тревог, см. раздел «Наблюдаемость» |
+| `SENTRY_DSN` | по желанию, адрес проекта в Sentry или GlitchTip |
 
 `DATABASE_URL` на сервере трогать не нужно: compose подставляет адрес базы сам.
 
@@ -201,7 +283,7 @@ docker compose run --rm web python -m app users totp admin
 
 ```bash
 curl https://ВАШ_ДОМЕН/health    # {"status":"ok","db":"ok"}, при недоступной базе 503
-docker compose ps                # web и worker: (healthy)
+docker compose ps                # web и worker: (healthy), prometheus и alertmanager: Up
 docker compose logs -f worker
 ```
 
