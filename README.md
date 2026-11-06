@@ -30,7 +30,10 @@ app/
 tests/          повторяют структуру app/, фикстуры ответов Metacritic в tests/fixtures
 migrations/     Alembic
 monitoring/     Prometheus: опрос и правила тревог, запуск Alertmanager с Telegram
+scripts/        бэкап базы с проверкой восстановления
 ```
+
+Веб-приложение собирает фабрика `create_app(settings)` в `app/web/app.py`. Пул соединений создаётся в `lifespan` и закрывается вместе с приложением. Настройки, шаблоны и база лежат в `app.state`, обработчики берут их оттуда через зависимости, поэтому тест может собрать приложение со своими настройками. Воркер и команды CLI получают базу через `default_database()` при первом обращении, при импорте модулей соединения не создаются. Доменный код пока читает общий объект `settings`, а все внешние входы (cookie, документация, шаблоны, база, логи) настраиваются тем, что передано в фабрику.
 
 Зависимости идут в одну сторону: `web` и `worker` → предметные пакеты → `core`. `core` ни от кого не зависит, `web` никто не импортирует. Правила записаны в `tests/test_architecture.py`, новый импорт против них уронит тесты.
 
@@ -47,7 +50,7 @@ python -m app db-roles                     # роли app_web и app_worker (д�
 python -m app reparse [--slug <slug>]      # пересобрать игры из сохранённых сырых ответов
 python -m app refresh                      # в очередь устаревшие резюме и эмбеддинги
 python -m app cleanup                      # очистка старых данных сейчас, не дожидаясь ночи
-uvicorn app.web.app:app                    # сайт
+uvicorn app.web.app:create_app --factory   # сайт
 ```
 
 ## Обход и очередь задач
@@ -56,7 +59,7 @@ uvicorn app.web.app:app                    # сайт
 
 ```
 расписание (раз в час) ─┐
-POST /api/runs ─────────┴─► collect ─► scrape_game ×20 ─┬─► summarize (critic, user)
+POST /api/v1/runs ──────┴─► collect ─► scrape_game ×20 ─┬─► summarize (critic, user)
                                                          └─► embed
 ```
 
@@ -68,7 +71,7 @@ POST /api/runs ─────────┴─► collect ─► scrape_game �
 
 - **Выборка** одним `UPDATE … FOR UPDATE SKIP LOCKED`, сама работа идёт вне транзакции. Задачу держит аренда (`locked_until`), долгие задачи продлевают её в фоне. Если воркер упал, сборщик раз в минуту вернёт задачу в очередь
 - **Повторы.** Сеть, таймауты, 429 и 5xx повторяются с экспоненциальной паузой. «Игры нет», ошибка формата, отказ модели и прочие 4xx сразу получают статус `dead`. Dead-задачу можно повторить кнопкой в мониторе
-- **Дедупликация** через `dedupe_key`: одна и та же работа не попадёт в очередь дважды, пока прошлая не завершилась. Второй `collect` создать нельзя, поэтому `POST /api/runs` отвечает 409
+- **Дедупликация** через `dedupe_key`: одна и та же работа не попадёт в очередь дважды, пока прошлая не завершилась. Второй `collect` создать нельзя, поэтому `POST /api/v1/runs` отвечает 409
 - **Параллельность по видам**: у Metacritic, LLM и эмбеддингов свои лимиты (`SCRAPE_CONCURRENCY`, `SUMMARY_CONCURRENCY`, `EMBED_CONCURRENCY`). Медленный этап не тормозит остальные. Под будущие летсплеи заведён вид `letsplay` и лимит `LETSPLAY_CONCURRENCY=1`
 - **NOTIFY** на канале `jobs` только будит воркеры. Пропущенное уведомление подхватит опрос раз в `JOB_POLL_SECONDS`, сама задача уже лежит в таблице
 - **Проход** закрывается в транзакции завершения последней своей задачи: `success`, `partial` (часть этапов сдалась) или `failed` (упал сам сбор). Каждая попытка каждого этапа пишет строку в `run_items`, из них монитор считает счётчики и показывает ошибки
@@ -161,7 +164,7 @@ ssh -L 9090:localhost:9090 -L 9093:localhost:9093 root@IP_СЕРВЕРА
 
 **Сырые ответы.** Ответы Metacritic по игре (карточка, оценки игроков по платформам, отзывы) хранятся в `raw_pages` сжатыми zlib, с sha256 канонического JSON. Из карточки берутся только блоки, которые читает парсер: цены и новости на странице меняются при каждом запросе, с ними hash не совпадал бы никогда. Одинаковый ответ новой строки не создаёт, только обновляет `last_seen_at`. После правки парсера `python -m app reparse` пересобирает игры из последних сырых ответов без единого запроса к Metacritic.
 
-**История оценок.** `score_history` (игра, платформа, metascore, userscore, время) пишется только при изменении оценок, поэтому растёт медленно. Отдаётся через `GET /api/games/{slug}/scores`, годится для графика и сортировки «в тренде».
+**История оценок.** `score_history` (игра, платформа, metascore, userscore, время) пишется только при изменении оценок, поэтому растёт медленно. Отдаётся через `GET /api/v1/games/{slug}/scores`, годится для графика и сортировки «в тренде».
 
 **Резюме.** В `review_summaries` хранятся hash набора отзывов, модель, `prompt_version` и токены ответа LLM (`input_tokens`, `output_tokens`). Резюме пересчитывается, если поменялось что-то из первых трёх. Константа `PROMPT_VERSION` в `app/enrichment/llm.py` увеличивается при каждой правке промпта или схемы ответа. Монитор показывает токены за сутки и, если заданы `LLM_PRICE_INPUT_PER_MTOK` и `LLM_PRICE_OUTPUT_PER_MTOK`, примерную стоимость.
 
@@ -171,20 +174,49 @@ ssh -L 9090:localhost:9090 -L 9093:localhost:9093 root@IP_СЕРВЕРА
 
 **Хранение.** Каждую ночь в `CLEANUP_HOUR` воркер удаляет пачками завершённые задачи, проходы с их `run_items` и курсоры старше `RETENTION_DAYS` (30 дней). Также удаляются старые версии сырых ответов старше `RAW_RETENTION_DAYS` (90 дней), но последний ответ по каждой игре остаётся всегда, иначе reparse будет не из чего делать. Каталог, резюме и история оценок не чистятся. Секционирование по месяцам не понадобилось: при 20 играх в час это десятки тысяч строк в месяц, удаление пачками с этим справляется. Секции станут нужны, если объём вырастет на порядки.
 
+## API
+
+JSON API версионирован: `/api/v1/...`. Документация в dev открывается на `/docs`, в проде выключена.
+
+| Метод и адрес | Что делает |
+|---|---|
+| `GET /api/v1/games` | каталог с поиском, фильтром по платформе, сортировкой и страницами |
+| `GET /api/v1/games/{slug}` | карточка игры, резюме отзывов и похожие игры |
+| `GET /api/v1/games/{slug}/scores` | история оценок по платформам |
+| `GET /api/v1/monitor` | снимок мониторинга, только администраторам |
+| `POST /api/v1/runs` | ручной запуск прохода, только администраторам |
+| `POST /api/v1/jobs/{id}/retry` | повтор dead-задачи, только администраторам |
+
+Старые адреса без версии (`/api/games` и другие) отвечают `308` на тот же путь под `/api/v1` с заголовком `Deprecation: true`. Метод и тело запроса при таком перенаправлении сохраняются.
+
 ## Локальный запуск
+
+Зависимости зафиксированы в `uv.lock` вместе с хешами. Установка ставит ровно то, что проверено в CI:
 
 ```bash
 cp .env.example .env            # заполнить пароли базы и ключ LLM
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db   # dev-файл открывает порт 5432
-python -m venv .venv && .venv/Scripts/activate   # Linux/macOS: source .venv/bin/activate
-pip install -e ".[dev]"
-alembic upgrade head
-python -m app users create-admin admin   # пароль спросит getpass
-uvicorn app.web.app:app --reload   # http://localhost:8000
-python -m app worker             # воркер по расписанию, в отдельном терминале
-python -m app crawl              # или один проход вручную
-pytest
+uv sync --extra dev             # .venv из uv.lock; без uv: pip install -e ".[dev]"
+uv run alembic upgrade head
+uv run python -m app users create-admin admin   # пароль спросит getpass
+uv run uvicorn app.web.app:create_app --factory --reload   # http://localhost:8000
+uv run python -m app worker      # воркер по расписанию, в отдельном терминале
+uv run python -m app crawl       # или один проход вручную
 ```
+
+После правки зависимостей в `pyproject.toml` lock обновляется командой `uv lock`.
+
+**Тесты:**
+
+```bash
+uv run pytest                           # модульные и интеграционные, нужна база из compose
+RUN_LIVE=1 uv run pytest -m live        # контракт с настоящим API Metacritic, нужна сеть
+uv run playwright install chromium      # один раз
+uv run pytest -m e2e                    # браузерные сценарии: uvicorn на тестовой базе и Chromium
+```
+
+- **Контрактные тесты** (`tests/contract`) проверяют, что парсеры понимают ответы Metacritic в их нынешнем виде. Фикстуры в `tests/fixtures` фиксируют формат на момент записи, а эти тесты ловят изменения самого API.
+- **E2E** (`tests/e2e`) запускают настоящий uvicorn через фабрику и проходят в Chromium три сценария: поиск в каталоге с htmx и переход на страницу игры, вход администратора с монитором по SSE и кнопкой запуска, ошибка неверного пароля.
 
 Весь стек целиком: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`, сайт на https://localhost (сертификат самоподписанный). Тесты и локальный uvicorn ходят в базу владельцем схемы, контейнеры web и worker — своими ролями.
 
@@ -245,6 +277,7 @@ nano .env
 | Переменная | Значение |
 |---|---|
 | `ENV` | `prod`: cookie только по HTTPS, `/docs` выключены, Caddy ставит HSTS |
+| `SECRET_KEY` | `openssl rand -hex 32`, обязателен в prod: ключ HMAC для CSRF-токенов |
 | `POSTGRES_PASSWORD` | сгенерированный пароль |
 | `APP_WEB_DB_PASSWORD`, `APP_WORKER_DB_PASSWORD` | ещё два сгенерированных пароля (только hex, они попадают в URL базы) |
 | `DOMAIN` | IP сервера через дефисы + `.sslip.io`, например `203-0-113-10.sslip.io` |
@@ -256,10 +289,15 @@ nano .env
 
 **7. Запустить**
 
+Образы собирает CI и публикует в GitHub Container Registry: `ghcr.io/dimirka/metacritic-games-web` и `-worker`, теги `latest` и SHA коммита. На сервере ничего не собирается:
+
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose ps          # migrate: Exited (0), остальные Up
 ```
+
+Если пакеты в GHCR приватные, сначала нужно один раз войти: `docker login ghcr.io` (логин GitHub и токен с правом `read:packages`). Чтобы закрепить версию, укажите в `.env` `IMAGE_TAG=<sha коммита>` вместо `latest`.
 
 Первый проход стартует сразу после запуска воркера, дальше раз в час.
 
@@ -294,10 +332,12 @@ docker compose logs -f worker
 **Обновление**
 
 ```bash
-cd /opt/metacritic-games && git pull && docker compose up -d --build
+cd /opt/metacritic-games && git pull && docker compose pull && docker compose up -d
 ```
 
-Сервис `migrate` при каждом запуске применяет миграции и затем `python -m app db-roles`. Команда идемпотентна: создаёт роли `app_web` и `app_worker` или обновляет их пароли из `.env`, заново выдаёт права и пересоздаёт функции базы для очереди и очистки. На уже работающем сервере после добавления паролей ролей в `.env` достаточно того же `docker compose up -d --build` или отдельно `docker compose run --rm migrate`.
+`git pull` нужен ради `docker-compose.yml`, `Caddyfile` и конфигов мониторинга, а код приложения приходит в образе. Откат — `IMAGE_TAG=<прошлый sha>` в `.env` и снова `docker compose up -d`.
+
+Сервис `migrate` при каждом запуске применяет миграции и затем `python -m app db-roles`. Команда идемпотентна: создаёт роли `app_web` и `app_worker` или обновляет их пароли из `.env`, заново выдаёт права и пересоздаёт функции базы для очереди и очистки. На уже работающем сервере после добавления паролей ролей в `.env` достаточно того же `docker compose up -d` или отдельно `docker compose run --rm migrate`.
 
 При обновлении с версии без второго фактора на сервере с `ENV=prod` после `up` нужно выполнить шаг 7б, иначе администратор не войдёт.
 
@@ -306,10 +346,57 @@ cd /opt/metacritic-games && git pull && docker compose up -d --build
 ```bash
 docker compose logs -f web worker      # логи
 docker compose restart worker          # перезапустить воркер
-docker compose exec db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > backup.sql   # бэкап базы
+docker compose exec backup ls -lh /backups   # бэкапы
 ```
 
+**Бэкапы.** Сервис `backup` (`scripts/backup.sh`) каждый день в `BACKUP_HOUR` по `TIMEZONE` делает `pg_dump -Fc` в том `backups`. Сразу после дампа он восстанавливает копию в отдельную базу `restore_check` и сверяет версию схемы с рабочей базой. Только после этого бэкап считается успешным.
+
+- Итог каждого запуска пишется в таблицу `backup_runs`. Монитор и метрики берут из неё возраст последнего проверенного бэкапа.
+- Тревоги `BackupStale` (нет проверенного бэкапа больше 26 часов) и `BackupFailed` приходят в тот же Telegram.
+- Копии старше `BACKUP_KEEP_DAYS` удаляются.
+- Если успешного бэкапа нет больше суток, например после первого запуска, копия делается сразу, не дожидаясь назначенного часа.
+
+**Внешнее хранилище.** Профиль `offsite` поднимает rclone. Он раз в час докладывает новые дампы в любое S3-совместимое хранилище (AWS S3, Backblaze B2, Яндекс Object Storage, Selectel). Настройки задаются переменными `RCLONE_CONFIG_OFFSITE_*` и `BACKUP_REMOTE` в `.env`:
+
+```bash
+docker compose --profile offsite up -d
+```
+
+Ключи хранилища получает только этот контейнер. Срок хранения во внешнем хранилище задаётся правилом жизненного цикла бакета.
+
+**Восстановление** из последней копии:
+
+```bash
+docker compose stop web worker
+docker compose exec backup sh -c 'pg_restore --clean --if-exists --no-owner -d "$PGDATABASE" "$(ls -t /backups/*.dump | head -1)"'
+docker compose run --rm migrate      # права ролей и функции
+docker compose start web worker
+```
+
+## Сборка и CI
+
+**Образы.** `Dockerfile` собирает два образа. Зависимости в них ставятся по `uv.lock` с проверкой хешей (`--require-hashes`):
+
+- `--target web`: сайт, API, миграции и команды пользователей, без fastembed, onnxruntime и LLM-клиентов;
+- `--target worker`: обход, LLM, эмбеддинги и расписание, без FastAPI и Jinja.
+
+Тесты `tests/web/test_factory.py` следят, чтобы импорт приложения web не тянул библиотеки воркера и наоборот.
+
+**CI** (`.github/workflows/ci.yml`):
+
+| Задание | Что делает |
+|---|---|
+| `test` | ruff, миграции вверх-вниз-вверх, `alembic check`, роли базы, pytest |
+| `e2e` | Playwright с Chromium |
+| `audit` | `pip-audit` по всему `uv.lock` |
+| `images` | сборка обоих образов и проверка Trivy (падает на HIGH и CRITICAL с готовым исправлением), на `master` публикация в GHCR |
+| `contract` | раз в неделю и вручную: контракт с живым API Metacritic |
+
+Dependabot (`.github/dependabot.yml`) раз в неделю предлагает обновления `uv.lock`, базовых образов, образов в compose и GitHub Actions.
+
 ## Безопасность
+
+**Сессии и CSRF.** Сессия запроса только читает базу. Отметку активности (`last_seen_at`, не чаще раза в минуту) пишет фоновая задача после отправки ответа, в своей транзакции. CSRF-токен — это HMAC-SHA256 от токена сессии на серверном `SECRET_KEY`: без секрета токен не подобрать, даже зная cookie. `SECRET_KEY` обязателен при `ENV=prod`, без него приложение не стартует. В dev без него берётся случайный ключ на время жизни процесса.
 
 **Вход и сессии.** Пароли хешируются argon2. Сессии хранятся на сервере (в базе только sha256 от токена), поэтому их можно отозвать: выход, смена пароля и деактивация пользователя действуют сразу. Cookie `HttpOnly`, `SameSite=Lax`, в проде `Secure` и префикс `__Host-`, срок жизни `SESSION_TTL_HOURS`. Ответ и время проверки одинаковые для неверного логина и неверного пароля. Поток мониторинга перепроверяет сессию каждые 30 секунд и закрывается, если её отозвали.
 
@@ -328,7 +415,7 @@ docker compose exec db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > back
 
 **CSP и заголовки.** Политику ставит middleware приложения: скрипты и стили только с собственного адреса (htmx лежит в `app/web/static`, инлайнового кода нет), картинки ещё с `www.metacritic.com`, iframe только с `cdn.jwplayer.com`, `frame-ancestors 'none'`. Плюс `nosniff`, `Referrer-Policy`, `Permissions-Policy`. HSTS ставит Caddy и только при `ENV=prod`. Ссылки из внешних данных (обложки, видео, летсплеи) проходят `safe_url`: только `https` и хост из списка разрешённых, а шаблоны проверяют их ещё раз перед выводом.
 
-**Ограничение частоты.** `/`, `/api/games` и `/login` ограничены по IP (`RATE_LIMIT_*`). Счётчики живут в памяти процесса web: при нескольких процессах uvicorn лимит фактически умножится на их число. Сейчас процесс один, это допустимо. Для нескольких процессов счётчик нужно вынести в Redis или в базу, как это уже сделано для попыток входа.
+**Ограничение частоты.** `/`, `/api/v1/games` и `/login` ограничены по IP (`RATE_LIMIT_*`). Счётчики живут в памяти процесса web: при нескольких процессах uvicorn лимит фактически умножится на их число. Сейчас процесс один, это допустимо. Для нескольких процессов счётчик нужно вынести в Redis или в базу, как это уже сделано для попыток входа.
 
 **Адрес клиента.** uvicorn запущен с `--forwarded-allow-ips "*"` и берёт IP из `X-Forwarded-For`. Это безопасно, потому что до web можно достучаться только из Caddy: web публикует порт только во внутреннюю сеть `frontend`, где кроме него есть один Caddy. Caddy же перезаписывает `X-Forwarded-For` реальным адресом клиента, так что подставить чужой IP снаружи нельзя.
 

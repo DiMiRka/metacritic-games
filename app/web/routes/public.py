@@ -19,7 +19,7 @@ from app.catalog.schemas import GameDetailOut, GameListOut, ScorePointOut
 from app.catalog.similar import similar_games
 from app.web.deps import Session, load_auth
 from app.web.middleware.ratelimit import api_limit, catalog_limit
-from app.web.templating import templates
+from app.web.templating import templates_of
 
 # Без явной сортировки: новые сверху, а при поиске — по совпадению с запросом
 SORT_LABELS = {
@@ -83,34 +83,36 @@ async def index(request: Request, session: Session, filters: Filters) -> HTMLRes
         "HX-History-Restore-Request"
     )
     if partial:
-        return templates.TemplateResponse(request, "_results.html", context)
+        return templates_of(request).TemplateResponse(request, "_results.html", context)
     context["platforms"] = await platform_options(session)
-    return templates.TemplateResponse(request, "index.html", context)
+    return templates_of(request).TemplateResponse(request, "index.html", context)
 
 
 @router.get("/games/{slug}", response_class=HTMLResponse)
 async def game_page(request: Request, session: Session, slug: str) -> HTMLResponse:
     game = await get_game(session, slug)
     if game is None:
-        return templates.TemplateResponse(request, "404.html", {"slug": slug}, status_code=404)
+        return templates_of(request).TemplateResponse(
+            request, "404.html", {"slug": slug}, status_code=404
+        )
     similar = await similar_games(session, game)
     summaries = {s.source: s for s in game.summaries}
     platforms = sorted(
         game.platforms, key=lambda p: (p.metascore is None, -(p.metascore or 0), p.platform_name)
     )
-    return templates.TemplateResponse(
+    return templates_of(request).TemplateResponse(
         request,
         "game.html",
         {"game": game, "platforms": platforms, "similar": similar, "summaries": summaries},
     )
 
 
-@router.get("/api/games", dependencies=[Depends(api_limit)])
+@router.get("/api/v1/games", dependencies=[Depends(api_limit)])
 async def api_games(session: Session, filters: Filters) -> GameListOut:
     return GameListOut.from_page(await list_games(session, filters))
 
 
-@router.get("/api/games/{slug}", dependencies=[Depends(api_limit)])
+@router.get("/api/v1/games/{slug}", dependencies=[Depends(api_limit)])
 async def api_game(session: Session, slug: str) -> GameDetailOut:
     game = await get_game(session, slug)
     if game is None:
@@ -118,7 +120,7 @@ async def api_game(session: Session, slug: str) -> GameDetailOut:
     return GameDetailOut.from_game(game, await similar_games(session, game))
 
 
-@router.get("/api/games/{slug}/scores", dependencies=[Depends(api_limit)])
+@router.get("/api/v1/games/{slug}/scores", dependencies=[Depends(api_limit)])
 async def api_game_scores(session: Session, slug: str) -> list[ScorePointOut]:
     """Изменения оценок по платформам для графиков: точка появляется, когда оценка поменялась"""
     game = await get_game(session, slug)

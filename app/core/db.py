@@ -1,25 +1,37 @@
-from collections.abc import AsyncIterator
+"""Подключение к базе. Engine создаётся явно: в lifespan приложения или при первом обращении
+из команды CLI и воркера, но не при импорте модуля"""
+
+from functools import cache
 
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
-    AsyncSession,
+    AsyncEngine,
     async_sessionmaker,
     create_async_engine,
 )
 
 from app.core.config import settings
 
-engine = create_async_engine(settings.database_url, pool_pre_ping=True)
-SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+class Database:
+    def __init__(self, url: str) -> None:
+        self.engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
+        self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
+
+    async def dispose(self) -> None:
+        await self.engine.dispose()
 
 
-async def get_session() -> AsyncIterator[AsyncSession]:
-    async with SessionLocal() as session:
-        yield session
+@cache
+def default_database() -> Database:
+    """База для процессов без приложения FastAPI: воркер и команды CLI"""
+    return Database(settings.database_url)
 
 
-def get_session_factory() -> async_sessionmaker[AsyncSession]:
-    return SessionLocal
+async def dispose_default_database() -> None:
+    if default_database.cache_info().currsize:
+        await default_database().dispose()
+        default_database.cache_clear()
 
 
 def asyncpg_dsn(database_url: str) -> str:

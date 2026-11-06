@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
-from app.core.db import SessionLocal, asyncpg_dsn, engine
+from app.core.db import asyncpg_dsn, default_database
 from app.crawler.breakers import Breakers
 from app.crawler.heartbeat import beat, cleanup_heartbeats, live_workers
 from app.crawler.models import Run, RunStatus, RunTrigger
@@ -179,10 +179,11 @@ class Worker:
 
 
 def build_stages(client: MetacriticClient) -> CrawlStages:
+    db = default_database()
     return CrawlStages(
         client=client,
-        engine=engine,
-        session_factory=SessionLocal,
+        engine=db.engine,
+        session_factory=db.session_factory,
         summarizer=build_summarizer(),
         embedder=FastEmbedder(),
     )
@@ -195,7 +196,9 @@ async def run_worker() -> None:
         start_http_server(settings.worker_metrics_port)
         logger.info("метрики воркера на порту {}", settings.worker_metrics_port)
     async with MetacriticClient() as client:
-        worker = Worker(build_stages(client), SessionLocal, settings.worker_identity)
+        worker = Worker(
+            build_stages(client), default_database().session_factory, settings.worker_identity
+        )
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError):
@@ -235,7 +238,7 @@ async def crawl_once(
     """Один проход прямо сейчас. Если работает воркер, collect ставится ему и команда ждёт
     конца прохода: второй обработчик в этом процессе удвоил бы частоту запросов к Metacritic
     """
-    session_factory = session_factory or SessionLocal
+    session_factory = session_factory or default_database().session_factory
     async with session_factory() as session, session.begin():
         workers = await live_workers(session)
         collect_id = await enqueue_collect(session, RunTrigger.MANUAL)
@@ -257,7 +260,7 @@ async def reparse(slug: str | None = None) -> ReparseReport:
     """Пересборка из сырых ответов; резюме и эмбеддинги ставятся в очередь воркеру"""
     summarizer = build_summarizer()
     return await reparse_games(
-        SessionLocal,
+        default_database().session_factory,
         slug=slug,
         summary_model=summarizer.model if summarizer else None,
         embed_model=settings.embedding_model,
@@ -265,14 +268,14 @@ async def reparse(slug: str | None = None) -> ReparseReport:
 
 
 async def cleanup_now() -> CleanupReport:
-    return await cleanup(SessionLocal)
+    return await cleanup(default_database().session_factory)
 
 
 async def refresh() -> Derived:
     """Резюме и эмбеддинги, устаревшие после смены модели или промпта, ставятся воркеру"""
     summarizer = build_summarizer()
     return await refresh_derived(
-        SessionLocal,
+        default_database().session_factory,
         summary_model=summarizer.model if summarizer else None,
         embed_model=settings.embedding_model,
     )

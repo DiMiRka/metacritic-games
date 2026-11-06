@@ -49,7 +49,7 @@
     const retry = event.target.closest("[data-retry]");
     if (!retry) return;
     retry.disabled = true;
-    const response = await post(`/api/jobs/${retry.dataset.retry}/retry`).catch(() => null);
+    const response = await post(`/api/v1/jobs/${retry.dataset.retry}/retry`).catch(() => null);
     const body = response ? await response.json().catch(() => ({})) : {};
     message.textContent = response?.ok
       ? `Задача #${retry.dataset.retry} снова в очереди`

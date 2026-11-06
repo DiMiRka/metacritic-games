@@ -42,12 +42,12 @@ async def test_api_and_login_limited(make_client, monkeypatch) -> None:
     monkeypatch.setattr(settings, "rate_limit_api_per_minute", 1)
     monkeypatch.setattr(settings, "rate_limit_login_per_minute", 1)
     async with make_client() as client:
-        api = [(await client.get("/api/games")).status_code for _ in range(2)]
+        api = [(await client.get("/api/v1/games")).status_code for _ in range(2)]
         login = [
             (await client.post("/login", data={"login": "x", "password": "y"})).status_code
             for _ in range(2)
         ]
-        detail = (await client.get("/api/games")).json()["detail"]
+        detail = (await client.get("/api/v1/games")).json()["detail"]
     assert api == [200, 429]
     assert login == [401, 429]
     assert detail.startswith("Слишком много")

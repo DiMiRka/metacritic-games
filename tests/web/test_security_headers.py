@@ -6,8 +6,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.catalog.models import Game
-from app.core.db import get_session
-from app.web.app import app
+from app.web.deps import get_session, get_session_factory
+from tests.conftest import app
 
 TEMPLATES = Path(__file__).parents[2] / "app" / "web" / "templates"
 
@@ -19,6 +19,7 @@ async def client(session_factory) -> AsyncIterator[AsyncClient]:
             yield session
 
     app.dependency_overrides[get_session] = override
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
         yield http
     app.dependency_overrides.clear()
@@ -32,7 +33,7 @@ async def add_game(session_factory, slug: str, video_url: str | None, cover_url:
 
 
 async def test_security_headers_on_pages_and_api(client) -> None:
-    for path in ("/", "/api/games", "/health", "/static/style.css"):
+    for path in ("/", "/api/v1/games", "/health", "/static/style.css"):
         response = await client.get(path)
         csp = response.headers["content-security-policy"]
         assert "script-src 'self';" in csp

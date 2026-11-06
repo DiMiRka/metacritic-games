@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import contextlib
 
-from app.core.db import engine
+from app.core.db import dispose_default_database
 from app.core.logs import configure_logging
 
 
@@ -90,7 +90,7 @@ async def run(args: argparse.Namespace) -> None:
             }
             await actions[args.action](args.login)
     finally:
-        await engine.dispose()
+        await dispose_default_database()
 
 
 def main(argv: list[str] | None = None) -> None:

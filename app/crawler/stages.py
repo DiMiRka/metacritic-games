@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from loguru import logger
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.catalog.models import Game, ReviewSource
@@ -29,7 +29,7 @@ from app.crawler.runs import ItemInfo, create_run, done_today, fail_run, finaliz
 from app.enrichment.embeddings import Embedder, embedding_outdated, embedding_text, text_hash
 from app.enrichment.llm import Summarizer
 from app.enrichment.summaries import summary_outdated, update_summary
-from app.jobs.models import ACTIVE_STATUSES, Job, JobKind
+from app.jobs.models import Job, JobKind
 from app.jobs.pool import Finish, JobType
 from app.jobs.queue import ClaimedJob, enqueue
 from app.scraper.client import MetacriticClient
@@ -66,23 +66,6 @@ async def enqueue_collect(
         dedupe_key=COLLECT_DEDUPE_KEY,
         requested_by=requested_by,
     )
-
-
-async def request_manual_collect(session: AsyncSession, user_id: int) -> int | None:
-    """Ручной запуск с сайта через функцию request_manual_collect: прав на запись в jobs
-    у сайта нет. None, если collect уже в очереди или не прошла пауза между запусками
-    """
-    return await session.scalar(select(func.request_manual_collect(user_id)))
-
-
-async def collect_active(session: AsyncSession) -> bool:
-    """collect уже в очереди или выполняется"""
-    count = await session.scalar(
-        select(func.count())
-        .select_from(Job)
-        .where(Job.kind == JobKind.COLLECT, Job.status.in_(ACTIVE_STATUSES))
-    )
-    return bool(count)
 
 
 async def store_bundle(

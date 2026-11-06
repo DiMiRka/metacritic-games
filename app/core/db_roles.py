@@ -12,7 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.config import settings
-from app.core.db import engine
+from app.core.db import default_database
 
 WEB_ROLE = "app_web"
 WORKER_ROLE = "app_worker"
@@ -44,6 +44,7 @@ WEB_READ_TABLES = (
     "breakers",
     "score_history",
     "jobs",
+    "backup_runs",
 )
 WEB_WRITE_TABLES = ("users", "sessions", "login_attempts")
 DML = "SELECT, INSERT, UPDATE, DELETE"
@@ -204,6 +205,6 @@ async def apply_roles(
 async def setup_roles() -> None:
     if not settings.app_web_db_password or not settings.app_worker_db_password:
         raise SystemExit("Задайте APP_WEB_DB_PASSWORD и APP_WORKER_DB_PASSWORD в .env")
-    async with engine.begin() as conn:
+    async with default_database().engine.begin() as conn:
         await apply_roles(conn, settings.app_web_db_password, settings.app_worker_db_password)
     print(f"Роли {WEB_ROLE} и {WORKER_ROLE} настроены")

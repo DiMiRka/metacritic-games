@@ -1,5 +1,6 @@
+# Образы собирает CI и кладёт в GHCR, на сервере: docker compose pull && docker compose up -d.
+# Локально docker compose up -d --build собирает их из Dockerfile
 x-app: &app
-  build: .
   restart: unless-stopped
   read_only: true
   tmpfs:
@@ -40,6 +41,10 @@ services:
   # Владелец схемы нужен только здесь: миграции, роли app_web и app_worker и функции очереди
   migrate:
     <<: *app
+    image: ${IMAGE_PREFIX:-ghcr.io/dimirka/metacritic-games}-web:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      target: web
     environment:
       <<: *common-env
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
@@ -60,9 +65,15 @@ services:
 
   web:
     <<: *app
+    image: ${IMAGE_PREFIX:-ghcr.io/dimirka/metacritic-games}-web:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      target: web
     environment:
       <<: *common-env
       DATABASE_URL: postgresql+asyncpg://app_web:${APP_WEB_DB_PASSWORD:?задайте APP_WEB_DB_PASSWORD в .env}@db:5432/${POSTGRES_DB}
+      # Секрет HMAC для CSRF-токенов, только у web
+      SECRET_KEY:
       MANUAL_RUN_COOLDOWN_MINUTES:
       SESSION_TTL_HOURS:
       LOGIN_MAX_ATTEMPTS:
@@ -92,6 +103,10 @@ services:
 
   worker:
     <<: *app
+    image: ${IMAGE_PREFIX:-ghcr.io/dimirka/metacritic-games}-worker:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      target: worker
     command: ["python", "-m", "app", "worker"]
     # Больше WORKER_SHUTDOWN_GRACE_SECONDS: воркер успевает доделать задачи и вернуть остальные
     stop_grace_period: 45s
@@ -153,6 +168,62 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  # Ежедневный pg_dump с проверкой восстановления в отдельную базу (scripts/backup.sh).
+  # Пароль владельца базы есть только здесь и у migrate
+  backup:
+    image: pgvector/pgvector:pg16
+    entrypoint: ["bash", "/scripts/backup.sh"]
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      TZ: ${TIMEZONE:-Europe/Moscow}
+      BACKUP_HOUR:
+      BACKUP_KEEP_DAYS:
+    volumes:
+      - ./scripts/backup.sh:/scripts/backup.sh:ro
+      - backups:/backups
+    networks: [backend]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Копии во внешнее хранилище (S3, Backblaze B2, Яндекс Object Storage…) через rclone.
+  # Включается профилем: docker compose --profile offsite up -d
+  backup-offsite:
+    image: rclone/rclone:1.68.2
+    profiles: [offsite]
+    entrypoint: ["sh", "-c", "while true; do rclone copy /backups \"$$BACKUP_REMOTE\" --include 'metacritic-*.dump' --log-level NOTICE; sleep 3600; done"]
+    environment:
+      BACKUP_REMOTE: ${BACKUP_REMOTE:-offsite:metacritic-backups}
+      RCLONE_CONFIG_OFFSITE_TYPE: s3
+      RCLONE_CONFIG_OFFSITE_PROVIDER:
+      RCLONE_CONFIG_OFFSITE_ENDPOINT:
+      RCLONE_CONFIG_OFFSITE_REGION:
+      RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID:
+      RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY:
+    volumes:
+      - backups:/backups:ro
+    networks: [egress]
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /config
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    restart: unless-stopped
 
   # Метрики и тревоги. Интерфейсы открыты только на 127.0.0.1 сервера: ssh -L 9090:localhost:9090
   prometheus:
@@ -241,4 +312,5 @@ volumes:
   caddy_data:
   caddy_config:
   prometheus_data:
+  backups:
   alertmanager_data:

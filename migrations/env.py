@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 import app.auth.models
 import app.catalog.models
 import app.crawler.models
-import app.jobs.models  # noqa: F401
+import app.jobs.models
+import app.monitoring.models  # noqa: F401
 from app.core.config import settings
 from app.core.models import Base
 

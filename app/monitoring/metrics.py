@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crawler.models import Run, RunItemStatus, RunStatus, WorkerHeartbeat
 from app.jobs.models import Breaker, BreakerState, Job, JobKind, JobStatus
+from app.monitoring.models import BackupRun, BackupStatus
 
 QUEUE_STATUSES = (JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.DEAD)
 FINAL_ITEM_STATUSES = (
@@ -41,6 +42,12 @@ ERROR_RATIO = Gauge(
     "crawler_error_ratio_last_hour", "Доля этапов, которые сдались, среди завершённых за час"
 )
 BREAKER_OPEN = Gauge("breaker_open", "Автомат открыт или ждёт пробы: 1, закрыт: 0", ["name"])
+BACKUP_AGE = Gauge(
+    "backup_last_success_age_seconds",
+    "Сколько секунд назад начался последний бэкап, прошедший проверку восстановления",
+)
+BACKUP_SIZE = Gauge("backup_last_size_bytes", "Размер последнего успешного бэкапа")
+BACKUP_FAILED = Gauge("backup_last_run_failed", "Последний завершённый бэкап не удался: 1")
 
 
 def _age(value: float | None) -> float:
@@ -103,3 +110,21 @@ async def refresh(session: AsyncSession) -> None:
 
     for name, state in await session.execute(select(Breaker.name, Breaker.state)):
         BREAKER_OPEN.labels(name).set(0 if state == BreakerState.CLOSED else 1)
+
+    last_success = (
+        await session.execute(
+            select(func.extract("epoch", func.now() - BackupRun.started_at), BackupRun.size_bytes)
+            .where(BackupRun.status == BackupStatus.SUCCESS, BackupRun.restore_checked)
+            .order_by(BackupRun.started_at.desc())
+            .limit(1)
+        )
+    ).first()
+    BACKUP_AGE.set(_age(last_success[0] if last_success else None))
+    BACKUP_SIZE.set(float(last_success[1] or 0) if last_success else 0)
+    last_status = await session.scalar(
+        select(BackupRun.status)
+        .where(BackupRun.status != BackupStatus.RUNNING)
+        .order_by(BackupRun.started_at.desc())
+        .limit(1)
+    )
+    BACKUP_FAILED.set(1 if last_status == BackupStatus.FAILED else 0)

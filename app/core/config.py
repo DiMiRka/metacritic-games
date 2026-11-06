@@ -1,4 +1,5 @@
 import os
+import secrets
 import socket
 import warnings
 from typing import Literal
@@ -12,6 +13,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     env: Literal["dev", "prod"] = "dev"
+    # Серверный секрет для HMAC CSRF-токенов, обязателен в prod: openssl rand -hex 32.
+    # В dev без него берётся случайный на время жизни процесса
+    secret_key: str = ""
 
     # json в контейнерах, text для чтения глазами при локальной разработке
     log_format: Literal["text", "json"] = "text"
@@ -96,6 +100,14 @@ class Settings(BaseSettings):
 
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_cache_dir: str = "data/models"
+
+    @model_validator(mode="after")
+    def _secret_key(self) -> "Settings":
+        if not self.secret_key:
+            if self.is_prod:
+                raise ValueError("SECRET_KEY обязателен при ENV=prod: openssl rand -hex 32")
+            self.secret_key = secrets.token_hex(32)
+        return self
 
     @model_validator(mode="after")
     def _legacy_concurrency(self) -> "Settings":

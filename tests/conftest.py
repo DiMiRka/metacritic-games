@@ -23,19 +23,21 @@ import app.auth.models
 import app.catalog.models
 import app.crawler.models
 import app.jobs.models
+import app.monitoring.models
 from app.auth.models import User
 from app.auth.service import create_session, csrf_token_for, hash_password
 from app.catalog.models import EMBEDDING_DIM, ReviewSource
 from app.core.config import settings
-from app.core.db import get_session, get_session_factory
 from app.core.db_roles import create_functions
 from app.core.models import Base
 from app.enrichment.llm import ReviewDigest, Summary
-from app.web.app import app
-from app.web.deps import SESSION_COOKIE
+from app.web.app import create_app
+from app.web.deps import get_session, get_session_factory, session_cookie
 from app.web.middleware.ratelimit import LIMITERS
 
 PASSWORD = "correct horse battery staple"
+app = create_app()
+SESSION_COOKIE = session_cookie(settings)
 ORIGIN = "http://test"
 
 FIXTURES = Path(__file__).parent / "fixtures"

@@ -1,21 +1,15 @@
 """Классификация ошибок задач: повторить позже или сразу dead"""
 
+import sys
 from dataclasses import dataclass
 
-import anthropic
-import httpx
-import openai
 import pydantic
 
 from app.core.errors import PermanentError, RetryableError
 
-_SDK_STATUS_ERRORS = (anthropic.APIStatusError, openai.APIStatusError)
-_SDK_TRANSIENT_ERRORS = (
-    anthropic.APIConnectionError,
-    openai.APIConnectionError,
-    anthropic.RateLimitError,
-    openai.RateLimitError,
-)
+# Библиотеки воркера не импортируются: исключение из SDK значит, что SDK уже загружен.
+# Так очередь работает и в образе web, где этих библиотек нет
+LLM_SDKS = ("anthropic", "openai")
 
 
 @dataclass(frozen=True)
@@ -37,14 +31,18 @@ def classify(exc: BaseException) -> Classified:
         return Classified(True, name)
     if isinstance(exc, pydantic.ValidationError):
         return Classified(False, name)
-    if isinstance(exc, httpx.HTTPStatusError):
-        status = exc.response.status_code
-        return Classified(_status_retryable(status), f"HTTP {status}")
-    if isinstance(exc, httpx.TransportError | TimeoutError):
+    if isinstance(exc, TimeoutError):
         return Classified(True, name)
-    if isinstance(exc, _SDK_TRANSIENT_ERRORS):
-        return Classified(True, name)
-    if isinstance(exc, _SDK_STATUS_ERRORS):
-        return Classified(_status_retryable(exc.status_code), f"{name} {exc.status_code}")
+    if httpx := sys.modules.get("httpx"):
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            return Classified(_status_retryable(status), f"HTTP {status}")
+        if isinstance(exc, httpx.TransportError):
+            return Classified(True, name)
+    for sdk in filter(None, map(sys.modules.get, LLM_SDKS)):
+        if isinstance(exc, sdk.APIConnectionError | sdk.RateLimitError):
+            return Classified(True, name)
+        if isinstance(exc, sdk.APIStatusError):
+            return Classified(_status_retryable(exc.status_code), f"{name} {exc.status_code}")
     # Неизвестную ошибку повторяем: число попыток всё равно ограничено max_attempts
     return Classified(True, name)

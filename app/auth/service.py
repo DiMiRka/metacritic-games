@@ -12,7 +12,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from loguru import logger
 from sqlalchemy import delete, distinct, func, or_, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth import totp
 from app.auth.models import LoginAttempt, User, UserRole, UserSession
@@ -38,6 +38,8 @@ class AuthContext:
     role: str
     session_id: int
     csrf_token: str
+    # Пора обновить last_seen_at: это делает фоновая задача после ответа, не сам запрос
+    touch_due: bool = False
 
     @property
     def is_admin(self) -> bool:
@@ -66,8 +68,11 @@ def token_hash(token: str) -> str:
 
 
 def csrf_token_for(session_token: str) -> str:
-    """CSRF-токен выводится из токена сессии: без cookie его не получить, хранить не нужно"""
-    return hashlib.sha256(b"csrf:" + session_token.encode()).hexdigest()
+    """CSRF-токен — HMAC от токена сессии на серверном секрете: без cookie и без SECRET_KEY
+    его не получить, хранить не нужно"""
+    return hmac.new(
+        settings.secret_key.encode(), b"csrf:" + session_token.encode(), hashlib.sha256
+    ).hexdigest()
 
 
 def csrf_valid(session_token: str, candidate: str | None) -> bool:
@@ -246,7 +251,7 @@ async def revoke_user_sessions(db: AsyncSession, user_id: int) -> None:
 
 
 async def load_session(db: AsyncSession, token: str | None) -> AuthContext | None:
-    """Действующая сессия активного пользователя, иначе None"""
+    """Действующая сессия активного пользователя, иначе None. Только читает базу"""
     if not token:
         return None
     now = now_tz()
@@ -264,9 +269,13 @@ async def load_session(db: AsyncSession, token: str | None) -> AuthContext | Non
     if row is None:
         return None
     session_id, last_seen, user_id, login, role = row
-    if (now - last_seen).total_seconds() > SESSION_TOUCH_SECONDS:
+    touch_due = (now - last_seen).total_seconds() > SESSION_TOUCH_SECONDS
+    return AuthContext(user_id, login, role, session_id, csrf_token_for(token), touch_due)
+
+
+async def touch_session(session_factory: async_sessionmaker[AsyncSession], session_id: int) -> None:
+    """Отметка активности в своей транзакции, вне сессии запроса"""
+    async with session_factory() as db, db.begin():
         await db.execute(
-            update(UserSession).where(UserSession.id == session_id).values(last_seen_at=now)
+            update(UserSession).where(UserSession.id == session_id).values(last_seen_at=func.now())
         )
-        await db.commit()
-    return AuthContext(user_id, login, role, session_id, csrf_token_for(token))

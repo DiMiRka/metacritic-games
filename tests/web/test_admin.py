@@ -17,6 +17,7 @@ from app.crawler.stages import enqueue_collect
 from app.jobs.models import Job
 from app.jobs.queue import CHANNEL, enqueue
 from app.web.routes.admin import monitor_events, sse_event
+from tests.conftest import app
 
 
 @pytest.fixture
@@ -70,16 +71,16 @@ async def dead_job(session_factory) -> int:
 
 
 async def test_run_rejected_without_live_worker(client, session_factory) -> None:
-    assert (await client.post("/api/runs")).status_code == 503
+    assert (await client.post("/api/v1/runs")).status_code == 503
     await add_heartbeat(session_factory, age_seconds=600)
-    assert (await client.post("/api/runs")).status_code == 503
+    assert (await client.post("/api/v1/runs")).status_code == 503
 
 
 async def test_run_conflict_when_collect_queued(client, session_factory) -> None:
     await add_heartbeat(session_factory)
     async with session_factory() as session, session.begin():
         await enqueue_collect(session, "schedule")
-    response = await client.post("/api/runs")
+    response = await client.post("/api/v1/runs")
     assert response.status_code == 409
     assert response.json()["detail"] == "Проход уже идёт"
 
@@ -87,14 +88,14 @@ async def test_run_conflict_when_collect_queued(client, session_factory) -> None
 async def test_run_conflict_when_lock_held(client, db_engine, session_factory) -> None:
     await add_heartbeat(session_factory)
     async with crawl_lock(db_engine):
-        assert (await client.post("/api/runs")).status_code == 409
+        assert (await client.post("/api/v1/runs")).status_code == 409
 
 
 async def test_run_rate_limited_after_recent_run(client, session_factory) -> None:
     await add_heartbeat(session_factory)
     await add_run(session_factory, minutes_ago=4)
 
-    response = await client.post("/api/runs")
+    response = await client.post("/api/v1/runs")
 
     assert response.status_code == 429
     assert 5 * 60 < int(response.headers["Retry-After"]) <= 6 * 60
@@ -110,8 +111,8 @@ async def test_run_accepted_writes_collect_job_and_notifies(
     conn = await asyncpg.connect(dsn)
     try:
         await conn.add_listener(CHANNEL, lambda *args: received.append(args[-1]))
-        response = await client.post("/api/runs")
-        second = await client.post("/api/runs")
+        response = await client.post("/api/v1/runs")
+        second = await client.post("/api/v1/runs")
         for _ in range(50):
             if received:
                 break
@@ -139,8 +140,8 @@ async def test_run_accepted_writes_collect_job_and_notifies(
 async def test_retry_dead_job(client, session_factory) -> None:
     job_id = await dead_job(session_factory)
 
-    response = await client.post(f"/api/jobs/{job_id}/retry")
-    again = await client.post(f"/api/jobs/{job_id}/retry")
+    response = await client.post(f"/api/v1/jobs/{job_id}/retry")
+    again = await client.post(f"/api/v1/jobs/{job_id}/retry")
 
     assert response.status_code == 200
     assert again.status_code == 404
@@ -152,10 +153,10 @@ async def test_retry_dead_job(client, session_factory) -> None:
 async def test_retry_requires_admin_and_csrf(make_client, session_factory) -> None:
     job_id = await dead_job(session_factory)
     async with make_client("viewer") as viewer:
-        assert (await viewer.post(f"/api/jobs/{job_id}/retry")).status_code == 403
+        assert (await viewer.post(f"/api/v1/jobs/{job_id}/retry")).status_code == 403
     async with make_client("admin") as admin:
         admin.headers.pop("X-CSRF-Token")
-        assert (await admin.post(f"/api/jobs/{job_id}/retry")).status_code == 403
+        assert (await admin.post(f"/api/v1/jobs/{job_id}/retry")).status_code == 403
 
 
 # Страница и поток
@@ -204,7 +205,9 @@ def test_sse_event_prefixes_every_line() -> None:
 
 async def test_monitor_events_stream(session_factory) -> None:
     await add_heartbeat(session_factory)
-    events = [e async for e in monitor_events(session_factory, interval=0, limit=2)]
+    events = [
+        e async for e in monitor_events(session_factory, app.state.templates, interval=0, limit=2)
+    ]
 
     assert len(events) == 2
     assert events[0].startswith("event: update\n")

@@ -5,16 +5,17 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.service import load_session
+from app.crawler.control import collect_active, request_manual_collect
 from app.crawler.lock import crawl_lock_held
 from app.crawler.runs import seconds_until_manual_run
-from app.crawler.stages import collect_active, request_manual_collect
 from app.jobs.queue import retry_dead
 from app.monitoring.snapshot import MonitorSnapshot, snapshot, worker_alive
 from app.web.deps import Admin, Session, SessionFactory, require_admin, require_csrf, session_token
-from app.web.templating import templates
+from app.web.templating import templates_of
 
 MONITOR_INTERVAL = 2.0
 # Как часто поток мониторинга перепроверяет, что сессия ещё действует
@@ -23,7 +24,7 @@ SESSION_RECHECK_SECONDS = 30.0
 router = APIRouter(dependencies=[Depends(require_admin)])
 
 
-def render_monitor(data: MonitorSnapshot) -> str:
+def render_monitor(templates: Jinja2Templates, data: MonitorSnapshot) -> str:
     return templates.get_template("_monitor.html").render(m=data)
 
 
@@ -34,6 +35,7 @@ def sse_event(event: str, data: str) -> str:
 
 async def monitor_events(
     session_factory: async_sessionmaker[AsyncSession],
+    templates: Jinja2Templates,
     interval: float = MONITOR_INTERVAL,
     limit: int | None = None,
     still_allowed: Callable[[], Awaitable[bool]] | None = None,
@@ -50,7 +52,7 @@ async def monitor_events(
             checked_at = time.monotonic()
         async with session_factory() as session:
             data = await snapshot(session)
-        yield sse_event("update", render_monitor(data))
+        yield sse_event("update", render_monitor(templates, data))
         sent += 1
         if limit is None or sent < limit:
             await asyncio.sleep(interval)
@@ -59,7 +61,7 @@ async def monitor_events(
 @router.get("/monitor", response_class=HTMLResponse)
 async def monitor_page(request: Request, session: Session) -> HTMLResponse:
     data = await snapshot(session)
-    return templates.TemplateResponse(
+    return templates_of(request).TemplateResponse(
         request, "monitor.html", {"m": data, "interval_ms": int(MONITOR_INTERVAL * 1000)}
     )
 
@@ -74,18 +76,18 @@ async def monitor_stream(request: Request, session_factory: SessionFactory) -> S
         return auth is not None and auth.is_admin
 
     return StreamingResponse(
-        monitor_events(session_factory, still_allowed=still_allowed),
+        monitor_events(session_factory, templates_of(request), still_allowed=still_allowed),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-@router.get("/api/monitor")
+@router.get("/api/v1/monitor")
 async def api_monitor(session: Session) -> MonitorSnapshot:
     return await snapshot(session)
 
 
-@router.post("/api/runs", status_code=202, dependencies=[Depends(require_csrf)])
+@router.post("/api/v1/runs", status_code=202, dependencies=[Depends(require_csrf)])
 async def start_run(session: Session, admin: Admin) -> JSONResponse:
     """202 означает, что задача collect записана в очередь и не потеряется"""
     if await collect_active(session) or await crawl_lock_held(session):
@@ -107,7 +109,7 @@ async def start_run(session: Session, admin: Admin) -> JSONResponse:
     return JSONResponse({"status": "accepted", "job_id": job_id}, status_code=202)
 
 
-@router.post("/api/jobs/{job_id}/retry", dependencies=[Depends(require_csrf)])
+@router.post("/api/v1/jobs/{job_id}/retry", dependencies=[Depends(require_csrf)])
 async def retry_job(session: Session, job_id: int) -> JSONResponse:
     """Повтор dead-задачи с чистым счётчиком попыток"""
     if not await retry_dead(session, job_id):

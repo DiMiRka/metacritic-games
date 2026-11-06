@@ -6,8 +6,8 @@ from httpx import ASGITransport, AsyncClient
 
 from app.catalog import queries
 from app.catalog.models import Game, GamePlatform, ReviewSummary
-from app.core.db import get_session
-from app.web.app import app
+from app.web.deps import get_session, get_session_factory
+from tests.conftest import app
 
 GAMES = [
     ("elden-ring", "Elden Ring", date(2022, 2, 25), ["Action RPG"],
@@ -57,13 +57,14 @@ async def client(session_factory) -> AsyncIterator[AsyncClient]:
             yield session
 
     app.dependency_overrides[get_session] = override
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
         yield http
     app.dependency_overrides.clear()
 
 
 async def slugs(client: AsyncClient, **params) -> list[str]:
-    response = await client.get("/api/games", params=params)
+    response = await client.get("/api/v1/games", params=params)
     assert response.status_code == 200
     return [item["slug"] for item in response.json()["items"]]
 
@@ -92,7 +93,7 @@ async def test_sort_by_userscore(client) -> None:
 
 
 async def test_platform_filter_uses_platform_scores(client) -> None:
-    response = await client.get("/api/games", params={"platform": "nintendo-switch"})
+    response = await client.get("/api/v1/games", params={"platform": "nintendo-switch"})
     items = response.json()["items"]
     assert [i["slug"] for i in items] == ["stardew-valley"]
     assert items[0]["metascore"] == 84
@@ -114,9 +115,9 @@ async def test_search_escapes_like_wildcards(client) -> None:
 
 async def test_pagination(client, monkeypatch) -> None:
     monkeypatch.setattr(queries, "PAGE_SIZE", 3)
-    first = (await client.get("/api/games")).json()
-    last = (await client.get("/api/games", params={"page": 2})).json()
-    clamped = (await client.get("/api/games", params={"page": 99})).json()
+    first = (await client.get("/api/v1/games")).json()
+    last = (await client.get("/api/v1/games", params={"page": 2})).json()
+    clamped = (await client.get("/api/v1/games", params={"page": 99})).json()
 
     assert (first["total"], first["pages"], len(first["items"])) == (4, 2, 3)
     assert [i["slug"] for i in last["items"]] == ["stardew-valley"]
@@ -124,11 +125,11 @@ async def test_pagination(client, monkeypatch) -> None:
 
 
 async def test_unknown_sort_falls_back(client) -> None:
-    assert (await client.get("/api/games", params={"sort": "drop table"})).status_code == 200
+    assert (await client.get("/api/v1/games", params={"sort": "drop table"})).status_code == 200
 
 
 async def test_api_game_detail(client) -> None:
-    data = (await client.get("/api/games/elden-ring")).json()
+    data = (await client.get("/api/v1/games/elden-ring")).json()
 
     assert data["title"] == "Elden Ring"
     assert {p["platform"] for p in data["platforms"]} == {"pc", "playstation-5"}
@@ -138,7 +139,7 @@ async def test_api_game_detail(client) -> None:
 
 
 async def test_api_game_not_found(client) -> None:
-    assert (await client.get("/api/games/nope")).status_code == 404
+    assert (await client.get("/api/v1/games/nope")).status_code == 404
 
 
 async def test_index_page(client) -> None:

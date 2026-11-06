@@ -1,11 +1,12 @@
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
-from app.core.config import settings
+from app.core.config import Settings
 from app.core.urls import IMAGE_HOSTS, VIDEO_HOSTS, YOUTUBE_HOSTS, safe_url
 
 WEB_DIR = Path(__file__).parent
@@ -27,10 +28,6 @@ def score_level(value: float | None, scale: int = 100) -> str:
     return "good" if value >= 75 else "mixed" if value >= 50 else "bad"
 
 
-def local_time(value: datetime | None) -> str:
-    return value.astimezone(settings.tz).strftime("%d.%m %H:%M:%S") if value else "—"
-
-
 def duration(seconds: float | None) -> str:
     if seconds is None:
         return "—"
@@ -48,13 +45,24 @@ def auth_context(request: Request) -> dict[str, Any]:
     return {
         "auth": auth,
         "csrf_token": auth.csrf_token if auth else "",
-        "show_docs": not settings.is_prod,
+        "show_docs": not request.app.state.settings.is_prod,
     }
 
 
-templates = Jinja2Templates(directory=WEB_DIR / "templates", context_processors=[auth_context])
-templates.env.filters["ru_date"] = ru_date
-templates.env.filters["safe_url"] = safe_url_filter
-templates.env.filters["local_time"] = local_time
-templates.env.filters["duration"] = duration
-templates.env.globals["score_level"] = score_level
+def build_templates(settings: Settings) -> Jinja2Templates:
+    tz = ZoneInfo(settings.timezone)
+
+    def local_time(value: datetime | None) -> str:
+        return value.astimezone(tz).strftime("%d.%m %H:%M:%S") if value else "—"
+
+    templates = Jinja2Templates(directory=WEB_DIR / "templates", context_processors=[auth_context])
+    templates.env.filters["ru_date"] = ru_date
+    templates.env.filters["safe_url"] = safe_url_filter
+    templates.env.filters["local_time"] = local_time
+    templates.env.filters["duration"] = duration
+    templates.env.globals["score_level"] = score_level
+    return templates
+
+
+def templates_of(request: Request) -> Jinja2Templates:
+    return request.app.state.templates

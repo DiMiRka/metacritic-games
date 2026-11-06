@@ -18,7 +18,7 @@ async def count(session_factory, model) -> int:
 def patched_cli(monkeypatch, session_factory, *passwords: str):
     answers = iter(passwords)
     monkeypatch.setattr(users_cli.getpass, "getpass", lambda prompt="": next(answers))
-    monkeypatch.setattr(users_cli, "SessionLocal", session_factory)
+    monkeypatch.setattr(users_cli, "open_session", session_factory)
     yield
 
 
@@ -47,7 +47,7 @@ async def test_cli_totp_enable_requires_valid_code(monkeypatch, session_factory,
 
     user_id = await create_user(session_factory, "root")
     await login_as(session_factory, user_id)
-    monkeypatch.setattr(users_cli, "SessionLocal", session_factory)
+    monkeypatch.setattr(users_cli, "open_session", session_factory)
 
     monkeypatch.setattr(users_cli, "ask_code", lambda: "000000")
     monkeypatch.setattr(totp, "match_step", lambda *a, **k: None)
@@ -59,7 +59,7 @@ async def test_cli_totp_enable_requires_valid_code(monkeypatch, session_factory,
         secret = capsys.readouterr().out.split("Ключ: ")[-1].split()[0]
         return totp.code_at(secret, totp.current_step())
 
-    monkeypatch.setattr(users_cli, "SessionLocal", session_factory)
+    monkeypatch.setattr(users_cli, "open_session", session_factory)
     monkeypatch.setattr(users_cli, "ask_code", answer)
     await users_cli.enable_totp("root")
     async with session_factory() as db:

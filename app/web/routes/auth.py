@@ -18,9 +18,16 @@ from app.auth.service import (
     too_many_attempts,
 )
 from app.core.config import settings
-from app.web.deps import SESSION_COOKIE, Session, check_csrf, load_auth, session_token
+from app.web.deps import (
+    Session,
+    app_settings,
+    check_csrf,
+    load_auth,
+    session_cookie,
+    session_token,
+)
 from app.web.middleware.ratelimit import login_limit
-from app.web.templating import templates
+from app.web.templating import templates_of
 
 INVALID_CREDENTIALS = "Неверный логин, пароль или код"
 
@@ -34,7 +41,7 @@ def client_ip(request: Request) -> str:
 
 
 def render_login(request: Request, next_url: str, error: str = "", status: int = 200):
-    return templates.TemplateResponse(
+    return templates_of(request).TemplateResponse(
         request, "login.html", {"next": next_url, "error": error}, status_code=status
     )
 
@@ -90,14 +97,15 @@ async def login(
     token = await create_session(db, user, ip, request.headers.get("user-agent"))
     await db.commit()
 
+    config = app_settings(request)
     response = RedirectResponse(target, status_code=303)
     response.set_cookie(
-        SESSION_COOKIE,
+        session_cookie(config),
         token,
-        max_age=settings.session_ttl_hours * 3600,
+        max_age=config.session_ttl_hours * 3600,
         path="/",
         httponly=True,
-        secure=settings.is_prod,
+        secure=config.is_prod,
         samesite="lax",
     )
     return response
@@ -113,8 +121,9 @@ async def logout(
         check_csrf(request, csrf_token or request.headers.get("X-CSRF-Token"))
         await revoke_session(db, token)
         await db.commit()
+    config = app_settings(request)
     response = RedirectResponse("/", status_code=303)
     response.delete_cookie(
-        SESSION_COOKIE, path="/", httponly=True, secure=settings.is_prod, samesite="lax"
+        session_cookie(config), path="/", httponly=True, secure=config.is_prod, samesite="lax"
     )
     return response

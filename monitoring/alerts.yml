@@ -39,6 +39,21 @@ groups:
         annotations:
           summary: "Автомат {{ $labels.name }} открыт дольше 15 минут"
 
+      # Бэкап делается раз в сутки, запас на долгий дамп и проверку восстановления
+      - alert: BackupStale
+        expr: backup_last_success_age_seconds > 26 * 3600
+        labels:
+          severity: critical
+        annotations:
+          summary: "Проверенного бэкапа не было {{ $value | humanizeDuration }}"
+
+      - alert: BackupFailed
+        expr: backup_last_run_failed == 1
+        labels:
+          severity: critical
+        annotations:
+          summary: "Последний бэкап не удался, подробности: docker compose logs backup"
+
       - alert: TargetDown
         expr: up == 0
         for: 2m

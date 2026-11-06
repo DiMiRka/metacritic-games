@@ -9,10 +9,8 @@ from app.auth.models import LoginAttempt, User, UserSession
 from app.auth.service import csrf_token_for, token_hash
 from app.core.clock import now_tz
 from app.core.config import settings
-from app.web.app import app
-from app.web.deps import SESSION_COOKIE
 from app.web.routes.admin import monitor_events
-from tests.conftest import ORIGIN, PASSWORD, create_user, login_as
+from tests.conftest import ORIGIN, PASSWORD, SESSION_COOKIE, app, create_user, login_as
 
 
 async def post_login(client, login, password=PASSWORD, next="/monitor", code=""):
@@ -127,7 +125,7 @@ async def test_logout_revokes_session(make_client, session_factory) -> None:
         client.headers.pop("X-CSRF-Token")
         rejected = await client.post("/logout", data={"csrf_token": "forged"})
         response = await client.post("/logout", data={"csrf_token": csrf})
-        after = await client.get("/api/monitor")
+        after = await client.get("/api/v1/monitor")
 
     assert rejected.status_code == 403
     assert response.status_code == 303
@@ -139,7 +137,7 @@ async def test_expired_session_is_rejected(make_client, session_factory) -> None
     async with make_client("admin") as client:
         async with session_factory() as db, db.begin():
             await db.execute(update(UserSession).values(expires_at=now_tz() - timedelta(minutes=1)))
-        assert (await client.get("/api/monitor")).status_code == 401
+        assert (await client.get("/api/v1/monitor")).status_code == 401
 
 
 async def test_anonymous_html_redirects_to_login(make_client) -> None:
@@ -149,7 +147,7 @@ async def test_anonymous_html_redirects_to_login(make_client) -> None:
     assert response.headers["location"] == "/login?next=/monitor%3Ftab%3D1"
 
 
-@pytest.mark.parametrize("path", ["/api/monitor", "/monitor/stream"])
+@pytest.mark.parametrize("path", ["/api/v1/monitor", "/monitor/stream"])
 async def test_anonymous_api_gets_401(make_client, path) -> None:
     async with make_client() as client:
         response = await client.get(path)
@@ -159,16 +157,16 @@ async def test_anonymous_api_gets_401(make_client, path) -> None:
 
 async def test_viewer_gets_403(make_client) -> None:
     async with make_client("viewer") as client:
-        api = await client.get("/api/monitor")
+        api = await client.get("/api/v1/monitor")
         page = await client.get("/monitor", headers={"Accept": "text/html"})
-        run = await client.post("/api/runs")
+        run = await client.post("/api/v1/runs")
     assert api.status_code == page.status_code == run.status_code == 403
     assert "Нет доступа" in page.text
 
 
 async def test_public_pages_stay_open(make_client) -> None:
     async with make_client() as client:
-        for path in ("/", "/api/games", "/health", "/login"):
+        for path in ("/", "/api/v1/games", "/health", "/login"):
             assert (await client.get(path)).status_code == 200
 
 
@@ -195,8 +193,8 @@ async def test_docs_available_in_dev(make_client) -> None:
 async def test_post_requires_csrf_header(make_client) -> None:
     async with make_client("admin") as client:
         client.headers.pop("X-CSRF-Token")
-        missing = await client.post("/api/runs")
-        forged = await client.post("/api/runs", headers={"X-CSRF-Token": "0" * 64})
+        missing = await client.post("/api/v1/runs")
+        forged = await client.post("/api/v1/runs", headers={"X-CSRF-Token": "0" * 64})
     assert missing.status_code == forged.status_code == 403
     assert missing.json()["detail"] == "Неверный CSRF-токен"
 
@@ -218,7 +216,7 @@ async def test_foreign_origin_rejected(session_factory, headers) -> None:
     async with AsyncClient(transport=transport, base_url=ORIGIN) as client:
         client.cookies.set(SESSION_COOKIE, token)
         headers = {"X-CSRF-Token": csrf_token_for(token), **headers}
-        run = await client.post("/api/runs", headers=headers)
+        run = await client.post("/api/v1/runs", headers=headers)
         login = await client.post("/login", data={"login": "admin"}, headers=headers)
     assert run.status_code == login.status_code == 403
     assert run.json()["detail"] == "Запрос с чужого адреса отклонён"
@@ -244,7 +242,12 @@ async def test_stream_closes_when_session_revoked(session_factory) -> None:
     events = [
         e
         async for e in monitor_events(
-            session_factory, interval=0, limit=10, still_allowed=still_allowed, recheck_seconds=0
+            session_factory,
+            app.state.templates,
+            interval=0,
+            limit=10,
+            still_allowed=still_allowed,
+            recheck_seconds=0,
         )
     ]
 

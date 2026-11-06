@@ -2,31 +2,42 @@
 name = "metacritic-games"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
+# Общее для web и worker: настройки, база, логи, метрики, ошибки, пароли
 dependencies = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.32",
-    "jinja2>=3.1",
     "pydantic-settings>=2.6",
     "sqlalchemy[asyncio]>=2.0.36",
     "asyncpg>=0.30",
     "alembic>=1.14",
     "pgvector>=0.3.6",
+    "argon2-cffi>=25.1",
+    "loguru>=0.7.3",
+    "prometheus-client>=0.21",
+    "sentry-sdk>=2.19",
+]
+
+[project.optional-dependencies]
+# Образ web: сайт, API, миграции и команды пользователей
+web = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.20",
+    "sentry-sdk[fastapi]>=2.19",
+]
+# Образ worker: Metacritic, LLM, эмбеддинги, расписание
+worker = [
     "httpx>=0.28",
     "apscheduler>=3.10,<4",
     "anthropic>=2.5",
     "openai>=3.40",
     "fastembed>=0.9",
-    "argon2-cffi>=25.1",
-    "python-multipart>=0.0.20",
-    "loguru>=0.7.3",
-    "prometheus-client>=0.21",
-    "sentry-sdk[fastapi]>=2.19",
 ]
-
-[project.optional-dependencies]
 dev = [
+    "metacritic-games[web,worker]",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "playwright>=1.48",
+    "pyyaml>=6.0",
     "ruff>=0.8",
 ]
 
@@ -51,3 +62,9 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
+markers = [
+    "live: контракт с настоящим API Metacritic, нужна сеть (RUN_LIVE=1)",
+    "e2e: браузерные сценарии на Playwright",
+]
+# Живые и браузерные тесты запускаются отдельно: pytest -m live, pytest -m e2e
+addopts = "-m 'not live and not e2e'"

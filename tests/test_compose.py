@@ -47,3 +47,27 @@ def test_monitoring_ports_only_on_loopback() -> None:
     for name in ("prometheus", "alertmanager"):
         for port in COMPOSE["services"][name]["ports"]:
             assert port.startswith("127.0.0.1:"), (name, port)
+
+
+def test_secret_key_only_in_web() -> None:
+    assert "SECRET_KEY" in env("web")
+    for name in ("worker", "migrate", "prometheus", "alertmanager"):
+        assert "SECRET_KEY" not in env(name), name
+
+
+def test_owner_password_only_in_migrate_and_backup() -> None:
+    owners = {
+        name
+        for name, service in COMPOSE["services"].items()
+        if "PGPASSWORD" in (service.get("environment") or {})
+        or "POSTGRES_PASSWORD" in str(service.get("environment") or {})
+    }
+    assert owners == {"db", "migrate", "backup"}
+
+
+def test_offsite_keys_only_in_offsite() -> None:
+    keys = {"RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID", "RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY"}
+    assert keys <= env("backup-offsite")
+    for name in COMPOSE["services"]:
+        if name != "backup-offsite":
+            assert not keys & env(name), name

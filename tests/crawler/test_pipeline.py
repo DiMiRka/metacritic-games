@@ -335,7 +335,7 @@ async def test_score_history_records_only_changes(
     assert sorted(m for p, m in rows if p == "pc") == [94, 95]
 
     async with make_client() as client:
-        points = (await client.get("/api/games/elden-ring/scores")).json()
+        points = (await client.get("/api/v1/games/elden-ring/scores")).json()
     assert [p["metascore"] for p in points if p["platform"] == "pc"] == [94, 95]
 
 

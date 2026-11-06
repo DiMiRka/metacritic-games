@@ -1,5 +1,5 @@
-from app.core.db import get_session
-from app.web.app import app
+from app.web.deps import get_session
+from tests.conftest import app
 
 
 async def test_health_checks_database(make_client) -> None:
