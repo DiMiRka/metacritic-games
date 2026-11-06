@@ -201,7 +201,7 @@ services:
   # Копии во внешнее хранилище (S3, Backblaze B2, Яндекс Object Storage…) через rclone.
   # Включается профилем: docker compose --profile offsite up -d
   backup-offsite:
-    image: rclone/rclone:1.68.2
+    image: rclone/rclone:1.75.2
     profiles: [offsite]
     entrypoint: ["sh", "-c", "while true; do rclone copy /backups \"$$BACKUP_REMOTE\" --include 'metacritic-*.dump' --log-level NOTICE; sleep 3600; done"]
     environment:
