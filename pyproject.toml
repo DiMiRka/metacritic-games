@@ -5,7 +5,7 @@ requires-python = ">=3.12,<3.13"
 # Общее для web и worker: настройки, база, логи, метрики, ошибки, пароли
 dependencies = [
     "pydantic-settings>=2.6",
-    "sqlalchemy[asyncio]>=2.0.36",
+    "sqlalchemy[asyncio]>=2.1.6",
     "asyncpg>=0.30",
     "alembic>=1.14",
     "pgvector>=0.3.6",
