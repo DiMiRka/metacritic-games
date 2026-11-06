@@ -43,10 +43,23 @@ EXPOSE 8000
 CMD ["uvicorn", "app.web.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*", "--timeout-graceful-shutdown", "5"]
 
 # Выгрузка бэкапов: rclone и age, шифрование открытым ключом перед отправкой
-FROM rclone/rclone:1.75.2 AS offsite
+# rclone собирается из исходников: официальный образ может отставать по версии Go,
+# а исправления crypto/x509 и crypto/tls важны для выгрузки по TLS. Версия Go обновляется
+# вместе с образом golang (Dependabot), версия rclone — в RCLONE_VERSION
+FROM golang:1.27.3-alpine3.24 AS rclone-build
+ARG RCLONE_VERSION=v1.75.2
+RUN CGO_ENABLED=0 go install -trimpath \
+        -ldflags "-s -w -X github.com/rclone/rclone/fs.Version=${RCLONE_VERSION}" \
+        github.com/rclone/rclone@${RCLONE_VERSION}
+
+FROM alpine:3.24.4 AS offsite
 # upgrade подтягивает исправления Alpine, вышедшие после сборки базового образа
-RUN apk upgrade --no-cache && apk add --no-cache age
+RUN apk upgrade --no-cache && apk add --no-cache age ca-certificates
+COPY --from=rclone-build /go/bin/rclone /usr/local/bin/rclone
 COPY scripts/offsite.sh /usr/local/bin/offsite.sh
+# Без root: контейнеру нужно только читать /backups и писать во временный /tmp
+ENV HOME=/tmp
+USER nobody
 ENTRYPOINT ["sh", "/usr/local/bin/offsite.sh"]
 
 FROM app AS worker
