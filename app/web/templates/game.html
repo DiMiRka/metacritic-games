@@ -79,14 +79,22 @@
     {% endif %}
   </section>
 
-  {% if game.letsplay and game.letsplay.status == "done" %}
-  <section>
-    <h2>Мнение летсплейщика</h2>
-    <p class="description">{{ game.letsplay.conclusion }}</p>
-    {% set letsplay_url = game.letsplay.video_url | safe_url("youtube") %}
-    {% if letsplay_url %}
-      <a href="{{ letsplay_url }}" target="_blank" rel="noopener noreferrer">{{ game.letsplay.title or "Ролик на YouTube" }} ↗</a>
-    {% endif %}
+  {% if game.letsplay and game.letsplay.status == "done" and game.letsplay.conclusion %}
+  {% set lp = game.letsplay %}
+  {% set verdicts = {"positive": ("success", "нравится"), "mixed": ("warn", "двоякое"), "negative": ("failed", "не нравится")} %}
+  <section class="letsplay">
+    <h2>Мнение летсплейщика
+      {% if lp.verdict in verdicts %}<span class="badge badge--{{ verdicts[lp.verdict][0] }}">{{ verdicts[lp.verdict][1] }}</span>{% endif %}
+    </h2>
+    <p class="description">{{ lp.conclusion }}</p>
+    {% set letsplay_url = lp.video_url | safe_url("youtube") %}
+    <p class="muted small">
+      {% if letsplay_url %}<a href="{{ letsplay_url }}" target="_blank" rel="noopener noreferrer">{{ lp.title or "Ролик на YouTube" }} ↗</a>{% endif %}
+      {% if lp.channel %} · {{ lp.channel }}{% endif %}
+      {% if lp.views %} · {{ "{:,}".format(lp.views).replace(",", " ") }} просмотров{% endif %}
+      {% if lp.duration_seconds %} · {{ lp.duration_seconds | duration }}{% endif %}
+    </p>
+    <p class="muted small">Заключение по {% if lp.transcript_source == "whisper" %}речи блогера, распознанной Whisper{% else %}субтитрам ролика{% endif %}, обобщено нейросетью</p>
   </section>
   {% endif %}
 

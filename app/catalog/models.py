@@ -35,6 +35,17 @@ class LetsplayStatus(StrEnum):
     FAILED = "failed"
 
 
+class TranscriptSource(StrEnum):
+    CAPTIONS = "captions"
+    WHISPER = "whisper"
+
+
+class LetsplayVerdict(StrEnum):
+    POSITIVE = "positive"
+    MIXED = "mixed"
+    NEGATIVE = "negative"
+
+
 class Game(Base):
     __tablename__ = "games"
 
@@ -134,19 +145,36 @@ class Letsplay(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     game_id: Mapped[int] = mapped_column(ForeignKey("games.id", ondelete="CASCADE"), unique=True)
+    video_id: Mapped[str | None] = mapped_column(String(20))
     video_url: Mapped[str | None] = mapped_column(Text)
     title: Mapped[str | None] = mapped_column(Text)
+    channel: Mapped[str | None] = mapped_column(Text)
     views: Mapped[int | None] = mapped_column(BigInteger)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer)
     transcript: Mapped[str | None] = mapped_column(Text)
+    transcript_source: Mapped[str | None] = mapped_column(String(10))
+    language: Mapped[str | None] = mapped_column(String(16))
     conclusion: Mapped[str | None] = mapped_column(Text)
+    verdict: Mapped[str | None] = mapped_column(String(10))
+    model: Mapped[str | None] = mapped_column(String(100))
+    prompt_version: Mapped[int | None] = mapped_column(Integer)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default=LetsplayStatus.PENDING)
     error: Mapped[str | None] = mapped_column(Text)
+    # Когда последний раз искали самый популярный ролик
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = created_column()
     updated_at: Mapped[datetime] = updated_column()
 
     game: Mapped[Game] = relationship(back_populates="letsplay")
 
-    __table_args__ = (Index("ix_letsplays_status", "status"), enum_check("status", LetsplayStatus))
+    __table_args__ = (
+        Index("ix_letsplays_status", "status"),
+        enum_check("status", LetsplayStatus),
+        enum_check("transcript_source", TranscriptSource),
+        enum_check("verdict", LetsplayVerdict),
+    )
 
 
 class GameReview(Base):

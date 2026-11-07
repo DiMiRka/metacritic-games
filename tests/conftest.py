@@ -30,9 +30,11 @@ from app.catalog.models import EMBEDDING_DIM, ReviewSource
 from app.core.config import settings
 from app.core.db_roles import create_functions
 from app.core.models import Base
-from app.enrichment.llm import ReviewDigest, Summary
+from app.enrichment.llm import Conclusion, LetsplayDigest, ReviewDigest, Summary
 from app.web.app import create_app
 from app.web.deps import get_session, get_session_factory, session_cookie
+from app.youtube.search import Candidate
+from app.youtube.transcript import Transcript
 
 PASSWORD = "correct horse battery staple"
 app = create_app()
@@ -140,6 +142,37 @@ class FakeSummarizer:
             raise RuntimeError("LLM недоступна")
         digest = ReviewDigest(likes=[f"{source} плюс"], dislikes=[f"{source} минус"])
         return Summary(digest, input_tokens=100 * len(reviews), output_tokens=50)
+
+    async def conclude(self, game_title: str, video_title: str, transcript: str) -> Conclusion:
+        self.calls.append((game_title, "letsplay", len(transcript)))
+        if self.fail:
+            raise RuntimeError("LLM недоступна")
+        digest = LetsplayDigest(conclusion=f"Блогеру понравилась {game_title}.", verdict="positive")
+        return Conclusion(digest, input_tokens=len(transcript), output_tokens=40)
+
+
+class FakeLetsplays:
+    """Подменяет YouTube: один и тот же популярный ролик или ничего"""
+
+    def __init__(self, video_id: str | None = "abc123def45", fail: Exception | None = None):
+        self.video_id = video_id
+        self.fail = fail
+        self.searches: list[str] = []
+        self.transcribed: list[str] = []
+
+    async def find(self, game_title: str) -> Candidate | None:
+        self.searches.append(game_title)
+        if self.video_id is None:
+            return None
+        return Candidate(
+            self.video_id, f"{game_title} - Let's Play Part 1", "Канал", 1_000_000, 3600
+        )
+
+    async def transcript(self, candidate: Candidate) -> Transcript:
+        self.transcribed.append(candidate.video_id)
+        if self.fail:
+            raise self.fail
+        return Transcript("Привет всем, сегодня играем. " * 20, "ru", "captions")
 
 
 class FakeEmbedder:

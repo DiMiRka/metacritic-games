@@ -12,6 +12,7 @@ from app.crawler.processor import ScrapeFormatError
 from app.jobs.breaker import BreakerPolicy, Verdict, gate, record
 from app.jobs.models import JobKind
 from app.jobs.queue import ClaimedJob
+from app.youtube.errors import YouTubeBlockedError
 
 _AUTH_ERRORS = (
     anthropic.AuthenticationError,
@@ -58,6 +59,21 @@ def judge_llm(error: BaseException | None) -> Verdict:
     return Verdict.SUCCESS
 
 
+def judge_youtube(error: BaseException | None) -> Verdict:
+    """Проверка «не бот ли вы» открывает сразу: следующие запросы с этого адреса ждёт то же"""
+    if error is None:
+        return Verdict.SUCCESS
+    if isinstance(error, YouTubeBlockedError):
+        return Verdict.TRIP
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        return Verdict.FAILURE if status == 429 or status >= 500 else Verdict.SUCCESS
+    if isinstance(error, _TRANSPORT):
+        return Verdict.NEUTRAL
+    # Ролик недоступен, нет речи, ошибка LLM: сам YouTube ответил нормально
+    return Verdict.SUCCESS
+
+
 METACRITIC = BreakerPolicy(
     "metacritic",
     threshold=lambda: settings.breaker_metacritic_threshold,
@@ -72,11 +88,20 @@ LLM = BreakerPolicy(
     probe_seconds=lambda: settings.breaker_probe_seconds,
     judge=judge_llm,
 )
+YOUTUBE = BreakerPolicy(
+    "youtube",
+    threshold=lambda: settings.breaker_metacritic_threshold,
+    # Блокировку по IP YouTube снимает не сразу: ждём столько же, сколько LLM
+    open_seconds=lambda: settings.breaker_llm_open_seconds,
+    probe_seconds=lambda: settings.breaker_probe_seconds,
+    judge=judge_youtube,
+)
 # Сбой LLM не должен влиять на scrape_game и embed, поэтому у embed автомата нет
 POLICY_BY_KIND = {
     JobKind.COLLECT: METACRITIC,
     JobKind.SCRAPE_GAME: METACRITIC,
     JobKind.SUMMARIZE: LLM,
+    JobKind.LETSPLAY: YOUTUBE,
 }
 
 

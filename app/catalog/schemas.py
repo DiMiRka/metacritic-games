@@ -68,8 +68,15 @@ class LetsplayOut(BaseModel):
     status: str
     video_url: str | None
     title: str | None
+    channel: str | None
     views: int | None
+    duration_seconds: int | None
     conclusion: str | None
+    verdict: str | None
+    # captions: субтитры ролика, whisper: речь распознана сервисом
+    transcript_source: str | None
+    language: str | None
+    checked_at: datetime | None
 
 
 class SimilarOut(BaseModel):

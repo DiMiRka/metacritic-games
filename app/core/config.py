@@ -102,7 +102,22 @@ class Settings(BaseSettings):
     # Цена модели резюме в $ за миллион токенов, 0: монитор не показывает стоимость
     llm_price_input_per_mtok: float = 0
     llm_price_output_per_mtok: float = 0
+    # Летсплеи: поиск через YouTube Data API, если задан ключ, иначе через yt-dlp без ключа
     youtube_api_key: str = ""
+    # Файл cookies в формате Netscape на случай, если YouTube требует подтвердить, что не бот
+    youtube_cookies_file: str = ""
+    # Ролики короче считаются трейлерами и нарезками, а не летсплеями
+    letsplay_min_duration_minutes: int = 10
+    # Откуда брать речь: субтитры, Whisper или сначала субтитры, потом Whisper
+    letsplay_transcriber: Literal["auto", "captions", "whisper"] = "auto"
+    # Whisper слушает только начало ролика
+    letsplay_max_audio_minutes: int = 20
+    # Сколько символов расшифровки уходит в LLM
+    letsplay_max_transcript_chars: int = 20000
+    # Через сколько дней снова искать самый популярный летсплей
+    letsplay_refresh_days: int = 30
+    whisper_model: str = "small"
+    whisper_threads: int = 2
 
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_cache_dir: str = "data/models"

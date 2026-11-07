@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     reparse.add_argument("--slug", help="только одна игра")
     commands.add_parser("cleanup", help="удалить старые задачи, проходы и сырые ответы сейчас")
     commands.add_parser(
-        "refresh", help="поставить в очередь устаревшие резюме и эмбеддинги (модель, промпт)"
+        "refresh", help="в очередь устаревшие резюме и эмбеддинги, недостающие летсплеи"
     )
 
     users = commands.add_parser("users", help="пользователи служебной части")
@@ -67,7 +67,8 @@ async def run(args: argparse.Namespace) -> None:
 
             derived = await refresh()
             print(
-                f"В очередь: резюме {derived.summaries}, эмбеддингов {derived.embeddings}. "
+                f"В очередь: резюме {derived.summaries}, эмбеддингов {derived.embeddings}, "
+                f"летсплеев {derived.letsplays}. "
                 "Обработает воркер"
             )
         elif args.command == "cleanup":

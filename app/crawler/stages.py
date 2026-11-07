@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.core.errors import PermanentError
 from app.core.logs import log_context
 from app.crawler.cursor import Cursor, collect_batch
+from app.crawler.letsplay import LetsplayWork, letsplay_due, mark_failed
 from app.crawler.lock import try_lock, unlock
 from app.crawler.models import CrawlPhase, CrawlState, RunItemStage, RunItemStatus
 from app.crawler.processor import (
@@ -34,6 +35,7 @@ from app.jobs.pool import Finish, JobType
 from app.jobs.queue import ClaimedJob, enqueue
 from app.scraper.client import MetacriticClient
 from app.scraper.parsers import Review, parse_listing
+from app.youtube.client import LetsplaySource
 
 COLLECT_DEDUPE_KEY = "collect"
 MANUAL_COLLECT_PRIORITY = 100
@@ -89,10 +91,11 @@ async def store_bundle(
 
 @dataclass
 class Derived:
-    """Сколько задач резюме и эмбеддингов поставлено в очередь"""
+    """Сколько задач резюме, эмбеддингов и летсплеев поставлено в очередь"""
 
     summaries: int = 0
     embeddings: int = 0
+    letsplays: int = 0
 
 
 async def enqueue_derived(
@@ -103,8 +106,10 @@ async def enqueue_derived(
     run_id: int | None,
     summary_model: str | None,
     embed_model: str | None,
+    letsplay: bool = False,
 ) -> Derived:
-    """Резюме и эмбеддинг, только если их входные данные, модель или промпт поменялись"""
+    """Резюме и эмбеддинг, только если их входные данные, модель или промпт поменялись.
+    Летсплей, если его ещё нет или пора искать заново"""
     derived = Derived()
     if summary_model:
         for source, items in reviews.items():
@@ -126,6 +131,17 @@ async def enqueue_derived(
             run_id=run_id,
         )
         derived.embeddings += job_id is not None
+    if letsplay and await letsplay_due(
+        session, game_id, refresh_days=settings.letsplay_refresh_days
+    ):
+        job_id = await enqueue(
+            session,
+            JobKind.LETSPLAY,
+            {"game_id": game_id},
+            dedupe_key=f"letsplay:{game_id}",
+            run_id=run_id,
+        )
+        derived.letsplays += job_id is not None
     return derived
 
 
@@ -142,9 +158,18 @@ class CrawlStages:
         session_factory: async_sessionmaker[AsyncSession],
         summarizer: Summarizer | None,
         embedder: Embedder | None,
+        letsplays: LetsplaySource | None = None,
         batch_size: int | None = None,
     ) -> None:
         self.client = client
+        # Заключению по летсплею нужна LLM: без неё этап не запускается
+        self.letsplays = (
+            LetsplayWork(
+                session_factory, letsplays, summarizer, settings.letsplay_max_transcript_chars
+            )
+            if letsplays and summarizer
+            else None
+        )
         self.engine = engine
         self.session_factory = session_factory
         self.summarizer = summarizer
@@ -160,6 +185,8 @@ class CrawlStages:
             types[JobKind.SUMMARIZE] = JobType(self.summarize, self._summarize_finished)
         if self.embedder:
             types[JobKind.EMBED] = JobType(self.embed, self._embed_finished)
+        if self.letsplays:
+            types[JobKind.LETSPLAY] = JobType(self.letsplay, self._letsplay_finished)
         return types
 
     # collect
@@ -268,6 +295,7 @@ class CrawlStages:
             run_id=run_id,
             summary_model=self.summarizer.model if self.summarizer else None,
             embed_model=self.embedder.model if self.embedder else None,
+            letsplay=self.letsplays is not None,
         )
 
     async def _scrape_finished(self, session: AsyncSession, job: ClaimedJob, finish: Finish):
@@ -324,4 +352,19 @@ class CrawlStages:
         changed = finish.result.changed if finish.result else False
         status = RunItemStatus.UPDATED if changed else RunItemStatus.SKIPPED
         info = ItemInfo(RunItemStage.EMBED, None, job.payload.get("game_id"), status)
+        await record_item(session, job, finish, info)
+
+    # letsplay
+
+    async def letsplay(self, job: ClaimedJob) -> StageResult:
+        result = await self.letsplays.run(job.payload["game_id"])
+        return StageResult(result.game_id, result.changed)
+
+    async def _letsplay_finished(self, session: AsyncSession, job: ClaimedJob, finish: Finish):
+        game_id = job.payload.get("game_id")
+        if finish.status == "dead" and game_id is not None:
+            await mark_failed(session, game_id, finish.error_text or "ошибка")
+        changed = finish.result.changed if finish.result else False
+        status = RunItemStatus.UPDATED if changed else RunItemStatus.SKIPPED
+        info = ItemInfo(RunItemStage.LETSPLAY, None, game_id, status)
         await record_item(session, job, finish, info)

@@ -31,7 +31,10 @@ def score_level(value: float | None, scale: int = 100) -> str:
 def duration(seconds: float | None) -> str:
     if seconds is None:
         return "—"
-    minutes, secs = divmod(int(seconds), 60)
+    hours, rest = divmod(int(seconds), 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours} ч {minutes} мин"
     return f"{minutes} мин {secs} с" if minutes else f"{secs} с"
 
 

@@ -184,3 +184,49 @@ async def test_html_is_escaped(client, session_factory) -> None:
     response = await client.get("/", params={"q": "script"})
     assert "<script>alert(1)</script>" not in response.text
     assert "&lt;script&gt;" in response.text
+
+
+async def test_game_page_and_api_show_letsplay(client, session_factory) -> None:
+    from app.catalog.models import Letsplay
+
+    async with session_factory() as session, session.begin():
+        game = Game(slug="hades", title="Hades", genres=[])
+        session.add(game)
+        await session.flush()
+        session.add(
+            Letsplay(
+                game_id=game.id, status="done", video_id="abc", channel="Канал",
+                video_url="https://www.youtube.com/watch?v=abc", title="Hades #1",
+                views=1234567, duration_seconds=5400, conclusion="Блогеру понравилось.",
+                verdict="mixed", transcript_source="whisper", transcript="секрет расшифровки",
+            )
+        )  # fmt: skip
+
+    page = (await client.get("/games/hades")).text
+    data = (await client.get("/api/v1/games/hades")).json()["letsplay"]
+
+    assert "Мнение летсплейщика" in page and "Блогеру понравилось." in page
+    assert 'href="https://www.youtube.com/watch?v=abc"' in page
+    assert "1 234 567 просмотров" in page and "1 ч 30 мин" in page
+    assert "распознанной Whisper" in page and "двоякое" in page
+    assert (data["verdict"], data["transcript_source"], data["channel"]) == (
+        "mixed",
+        "whisper",
+        "Канал",
+    )
+    assert "transcript" not in data
+
+
+async def test_letsplay_link_only_to_youtube(client, session_factory) -> None:
+    from app.catalog.models import Letsplay
+
+    async with session_factory() as session, session.begin():
+        game = Game(slug="evil", title="Evil", genres=[])
+        session.add(game)
+        await session.flush()
+        session.add(
+            Letsplay(game_id=game.id, status="done", conclusion="ok",
+                     video_url="https://evil.example/watch?v=1", title="Ролик")
+        )  # fmt: skip
+    page = (await client.get("/games/evil")).text
+    assert "evil.example" not in page

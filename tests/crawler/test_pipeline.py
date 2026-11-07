@@ -70,6 +70,7 @@ async def run_pipeline(
     embedder=None,
     trigger: str = "schedule",
     requested_by: int | None = None,
+    letsplays=None,
 ) -> int | None:
     stages = CrawlStages(
         client=client,
@@ -77,6 +78,7 @@ async def run_pipeline(
         session_factory=session_factory,
         summarizer=summarizer,
         embedder=embedder,
+        letsplays=letsplays,
         batch_size=20,
     )
     async with session_factory() as session, session.begin():

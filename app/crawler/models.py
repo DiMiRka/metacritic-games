@@ -34,6 +34,7 @@ class RunItemStage(StrEnum):
     SUMMARIZE_CRITIC = "summarize_critic"
     SUMMARIZE_USER = "summarize_user"
     EMBED = "embed"
+    LETSPLAY = "letsplay"
 
 
 class RunItemStatus(StrEnum):

@@ -65,8 +65,10 @@ async def refresh_derived(
     *,
     summary_model: str | None,
     embed_model: str | None,
+    letsplay: bool = False,
 ) -> Derived:
-    """Ставит в очередь устаревшие резюме и эмбеддинги: после смены модели или PROMPT_VERSION"""
+    """Ставит в очередь устаревшие резюме и эмбеддинги (после смены модели или PROMPT_VERSION)
+    и летсплеи, которых ещё нет или которые пора искать заново"""
     async with session_factory() as session:
         game_ids = (await session.scalars(select(Game.id).order_by(Game.id))).all()
     total = Derived()
@@ -80,7 +82,9 @@ async def refresh_derived(
                 run_id=None,
                 summary_model=summary_model,
                 embed_model=embed_model,
+                letsplay=letsplay,
             )
         total.summaries += derived.summaries
         total.embeddings += derived.embeddings
+        total.letsplays += derived.letsplays
     return total

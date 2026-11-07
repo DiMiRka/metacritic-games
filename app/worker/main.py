@@ -28,6 +28,7 @@ from app.jobs.models import ACTIVE_STATUSES, Job, JobKind
 from app.jobs.pool import JobPool, JobType
 from app.jobs.queue import CHANNEL, reap_expired
 from app.scraper.client import MetacriticClient
+from app.youtube.client import LetsplaySource, YouTubeLetsplays
 
 HEARTBEAT_SECONDS = 15
 REAPER_SECONDS = 60
@@ -50,7 +51,7 @@ def build_pools(
     worker_id: str,
     **pool_kwargs,
 ) -> list[JobPool]:
-    """Пул на группу; группа без обработчиков (пока letsplay) не запускается"""
+    """Пул на группу; группа без обработчиков (например, letsplay без LLM) не запускается"""
     pools = []
     for name, kinds, limit_setting in POOL_GROUPS:
         group = {kind: types[kind] for kind in kinds if kind in types}
@@ -178,7 +179,7 @@ class Worker:
             await self.heartbeat("stopped")
 
 
-def build_stages(client: MetacriticClient) -> CrawlStages:
+def build_stages(client: MetacriticClient, letsplays: LetsplaySource | None = None) -> CrawlStages:
     db = default_database()
     return CrawlStages(
         client=client,
@@ -186,6 +187,7 @@ def build_stages(client: MetacriticClient) -> CrawlStages:
         session_factory=db.session_factory,
         summarizer=build_summarizer(),
         embedder=FastEmbedder(),
+        letsplays=letsplays,
     )
 
 
@@ -195,15 +197,21 @@ async def run_worker() -> None:
         # Отдельный поток: опрос Prometheus не зависит от занятости цикла событий
         start_http_server(settings.worker_metrics_port)
         logger.info("метрики воркера на порту {}", settings.worker_metrics_port)
-    async with MetacriticClient() as client:
-        worker = Worker(
-            build_stages(client), default_database().session_factory, settings.worker_identity
-        )
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            with contextlib.suppress(NotImplementedError):
-                loop.add_signal_handler(sig, worker.stop.set)
-        await worker.run()
+    letsplays = YouTubeLetsplays(settings)
+    try:
+        async with MetacriticClient() as client:
+            worker = Worker(
+                build_stages(client, letsplays),
+                default_database().session_factory,
+                settings.worker_identity,
+            )
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                with contextlib.suppress(NotImplementedError):
+                    loop.add_signal_handler(sig, worker.stop.set)
+            await worker.run()
+    finally:
+        await letsplays.aclose()
 
 
 async def wait_for_run(
@@ -278,4 +286,6 @@ async def refresh() -> Derived:
         default_database().session_factory,
         summary_model=summarizer.model if summarizer else None,
         embed_model=settings.embedding_model,
+        # Заключение по летсплею делает та же LLM: без неё этап не работает
+        letsplay=summarizer is not None,
     )
