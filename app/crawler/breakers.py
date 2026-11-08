@@ -108,6 +108,7 @@ POLICY_BY_KIND = {
     JobKind.LETSPLAY: YOUTUBE,
     # Заключение по летсплею делает LLM: кончилась квота — ждёт вместе с резюме отзывов
     JobKind.LETSPLAY_CONCLUDE: LLM,
+    JobKind.TRANSLATE: LLM,
 }
 
 

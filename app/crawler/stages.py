@@ -30,6 +30,7 @@ from app.crawler.runs import ItemInfo, create_run, done_today, fail_run, finaliz
 from app.enrichment.embeddings import Embedder, embedding_outdated, embedding_text, text_hash
 from app.enrichment.llm import Summarizer
 from app.enrichment.summaries import summary_outdated, update_summary
+from app.enrichment.translation import save_translation, translation_outdated
 from app.jobs.models import Job, JobKind
 from app.jobs.pool import Finish, JobType
 from app.jobs.queue import ClaimedJob, enqueue
@@ -96,6 +97,7 @@ class Derived:
     summaries: int = 0
     embeddings: int = 0
     letsplays: int = 0
+    translations: int = 0
 
 
 async def enqueue_derived(
@@ -122,6 +124,15 @@ async def enqueue_derived(
                     run_id=run_id,
                 )
                 derived.summaries += job_id is not None
+    if summary_model and await translation_outdated(session, game_id, summary_model):
+        job_id = await enqueue(
+            session,
+            JobKind.TRANSLATE,
+            {"game_id": game_id},
+            dedupe_key=f"translate:{game_id}",
+            run_id=run_id,
+        )
+        derived.translations += job_id is not None
     if embed_model and await embedding_outdated(session, game_id, embed_model):
         job_id = await enqueue(
             session,
@@ -186,6 +197,7 @@ class CrawlStages:
         }
         if self.summarizer:
             types[JobKind.SUMMARIZE] = JobType(self.summarize, self._summarize_finished)
+            types[JobKind.TRANSLATE] = JobType(self.translate, self._translate_finished)
         if self.embedder:
             types[JobKind.EMBED] = JobType(self.embed, self._embed_finished)
         if self.transcriber:
@@ -316,6 +328,31 @@ class CrawlStages:
         info = ItemInfo(
             RunItemStage.SCRAPE, job.payload.get("slug"), result and result.game_id, status
         )
+        await record_item(session, job, finish, info)
+
+    # translate
+
+    async def translate(self, job: ClaimedJob) -> StageResult:
+        game_id = job.payload["game_id"]
+        async with self.session_factory() as session:
+            game = await session.get(Game, game_id)
+            if game is None:
+                raise PermanentError(f"игры {game_id} больше нет")
+            title, source = game.title, game.description
+            outdated = await translation_outdated(session, game_id, self.summarizer.model)
+        if not source or not outdated:
+            return StageResult(game_id, False)
+        translation = await self.summarizer.translate(title, source)
+        async with self.session_factory() as session, session.begin():
+            saved = await save_translation(
+                session, game_id, source, translation.text, self.summarizer.model
+            )
+        return StageResult(game_id, saved)
+
+    async def _translate_finished(self, session: AsyncSession, job: ClaimedJob, finish: Finish):
+        changed = finish.result.changed if finish.result else False
+        status = RunItemStatus.UPDATED if changed else RunItemStatus.SKIPPED
+        info = ItemInfo(RunItemStage.TRANSLATE, None, job.payload.get("game_id"), status)
         await record_item(session, job, finish, info)
 
     # summarize

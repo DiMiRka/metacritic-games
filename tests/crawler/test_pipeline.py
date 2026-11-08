@@ -141,6 +141,8 @@ async def test_full_run(db_engine, session_factory) -> None:
         ("elden-ring", "summarize_user"),
         ("elden-ring", "embed"),
         ("starshapes", "embed"),
+        # У starshapes в фикстуре нет описания: переводить нечего
+        ("elden-ring", "translate"),
     }
     async with session_factory() as session:
         stats = (await run_stats(session, [run_id]))[run_id]
@@ -158,7 +160,9 @@ async def test_full_run(db_engine, session_factory) -> None:
     assert embedded == 2
     assert state.phase == "browse"
     # Летсплеи ставятся по каждой сохранённой игре, но вне прохода: он закрылся без них
-    assert jobs == {"collect": 1, "scrape_game": 3, "summarize": 2, "embed": 2, "letsplay": 2}
+    assert jobs == {
+        "collect": 1, "scrape_game": 3, "summarize": 2, "translate": 1, "embed": 2, "letsplay": 2,
+    }  # fmt: skip
 
 
 async def test_upsert_is_idempotent_across_days(db_engine, session_factory, monkeypatch) -> None:

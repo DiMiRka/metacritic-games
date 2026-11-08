@@ -38,7 +38,15 @@
   {% if game.description %}
   <section>
     <h2>Описание</h2>
-    <p class="description">{{ game.description }}</p>
+    {% if game.description_ru %}
+      <p class="description">{{ game.description_ru }}</p>
+      <details class="original">
+        <summary class="muted small">Оригинал с Metacritic</summary>
+        <p class="description" lang="en">{{ game.description }}</p>
+      </details>
+    {% else %}
+      <p class="description">{{ game.description }}</p>
+    {% endif %}
   </section>
   {% endif %}
 

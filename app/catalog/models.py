@@ -57,6 +57,9 @@ class Game(Base):
     cover_url: Mapped[str | None] = mapped_column(Text)
     developer: Mapped[str | None] = mapped_column(String(500))
     description: Mapped[str | None] = mapped_column(Text)
+    # Перевод описания на русский (app/enrichment/translation.py) и ключ того, из чего он сделан
+    description_ru: Mapped[str | None] = mapped_column(Text)
+    description_ru_key: Mapped[str | None] = mapped_column(String(64))
     video_url: Mapped[str | None] = mapped_column(Text)
     release_date: Mapped[date | None] = mapped_column(Date)
     genres: Mapped[list[str]] = mapped_column(

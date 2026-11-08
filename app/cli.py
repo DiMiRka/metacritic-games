@@ -68,7 +68,7 @@ async def run(args: argparse.Namespace) -> None:
             derived = await refresh()
             print(
                 f"В очередь: резюме {derived.summaries}, эмбеддингов {derived.embeddings}, "
-                f"летсплеев {derived.letsplays}. "
+                f"летсплеев {derived.letsplays}, переводов {derived.translations}. "
                 "Обработает воркер"
             )
         elif args.command == "cleanup":

@@ -286,3 +286,7 @@ h1, h2, h3 { line-height: 1.2; }
   border-radius: var(--radius);
   padding: 8px 12px;
 }
+
+.original { margin-top: 8px; }
+.original summary { cursor: pointer; }
+.original .description { margin-top: 8px; color: var(--muted); }

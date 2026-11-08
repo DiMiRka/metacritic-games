@@ -87,4 +87,5 @@ async def refresh_derived(
         total.summaries += derived.summaries
         total.embeddings += derived.embeddings
         total.letsplays += derived.letsplays
+        total.translations += derived.translations
     return total

@@ -26,4 +26,4 @@ def test_conclusion_runs_in_summarize_pool(session_factory, monkeypatch) -> None
     monkeypatch.setattr(settings, "worker_pools", "summarize")
     types = {kind: JobType(handler) for kind in JobKind}
     (pool,) = build_pools(types, session_factory, "w")
-    assert set(pool.kinds) == {JobKind.SUMMARIZE, JobKind.LETSPLAY_CONCLUDE}
+    assert set(pool.kinds) == {JobKind.SUMMARIZE, JobKind.LETSPLAY_CONCLUDE, JobKind.TRANSLATE}

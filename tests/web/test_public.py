@@ -230,3 +230,26 @@ async def test_letsplay_link_only_to_youtube(client, session_factory) -> None:
         )  # fmt: skip
     page = (await client.get("/games/evil")).text
     assert "evil.example" not in page
+
+
+async def test_game_page_shows_translation_with_original(client, session_factory) -> None:
+    async with session_factory() as session, session.begin():
+        session.add(
+            Game(slug="t", title="T", genres=[], description="Dark fantasy <b>world</b>",
+                 description_ru="Мрачное фэнтези")
+        )  # fmt: skip
+        session.add(Game(slug="u", title="U", genres=[], description="Only English"))
+
+    translated = (await client.get("/games/t")).text
+    untranslated = (await client.get("/games/u")).text
+    data = (await client.get("/api/v1/games/t")).json()
+
+    assert '<p class="description">Мрачное фэнтези</p>' in translated
+    assert "Оригинал с Metacritic" in translated
+    assert "Dark fantasy &lt;b&gt;world&lt;/b&gt;" in translated
+    assert '<p class="description">Only English</p>' in untranslated
+    assert "Оригинал с Metacritic" not in untranslated
+    assert (data["description"], data["description_ru"]) == (
+        "Dark fantasy <b>world</b>",
+        "Мрачное фэнтези",
+    )

@@ -30,7 +30,7 @@ from app.catalog.models import EMBEDDING_DIM, ReviewSource
 from app.core.config import settings
 from app.core.db_roles import create_functions
 from app.core.models import Base
-from app.enrichment.llm import Conclusion, LetsplayDigest, ReviewDigest, Summary
+from app.enrichment.llm import Conclusion, LetsplayDigest, ReviewDigest, Summary, Translation
 from app.web.app import create_app
 from app.web.deps import get_session, get_session_factory, session_cookie
 from app.youtube.search import Candidate
@@ -135,6 +135,7 @@ class FakeSummarizer:
         self.model = model
         self.fail = fail
         self.calls: list[tuple[str, str, int]] = []
+        self.translations: list[str] = []
 
     async def summarize(self, title: str, source: ReviewSource, reviews: list) -> Summary:
         self.calls.append((title, source, len(reviews)))
@@ -142,6 +143,12 @@ class FakeSummarizer:
             raise RuntimeError("LLM недоступна")
         digest = ReviewDigest(likes=[f"{source} плюс"], dislikes=[f"{source} минус"])
         return Summary(digest, input_tokens=100 * len(reviews), output_tokens=50)
+
+    async def translate(self, game_title: str, description: str) -> Translation:
+        self.translations.append(game_title)
+        if self.fail:
+            raise RuntimeError("LLM недоступна")
+        return Translation(f"[ru] {description}", input_tokens=len(description), output_tokens=10)
 
     async def conclude(self, game_title: str, video_title: str, transcript: str) -> Conclusion:
         self.calls.append((game_title, "letsplay", len(transcript)))

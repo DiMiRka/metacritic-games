@@ -93,6 +93,8 @@ class GameDetailOut(BaseModel):
     cover_url: str | None
     developer: str | None
     description: str | None
+    # Перевод описания на русский, пока его нет — null
+    description_ru: str | None
     video_url: str | None
     release_date: date | None
     genres: list[str]
@@ -113,6 +115,7 @@ class GameDetailOut(BaseModel):
             cover_url=game.cover_url,
             developer=game.developer,
             description=game.description,
+            description_ru=game.description_ru,
             video_url=game.video_url,
             release_date=game.release_date,
             genres=game.genres,

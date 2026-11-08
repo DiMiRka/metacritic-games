@@ -39,7 +39,11 @@ CLEANUP_JOB = "cleanup"
 # ограничения, цены и характер сбоев
 POOL_GROUPS = (
     ("metacritic", (JobKind.COLLECT, JobKind.SCRAPE_GAME), "scrape_concurrency"),
-    ("summarize", (JobKind.SUMMARIZE, JobKind.LETSPLAY_CONCLUDE), "summary_concurrency"),
+    (
+        "summarize",
+        (JobKind.SUMMARIZE, JobKind.LETSPLAY_CONCLUDE, JobKind.TRANSLATE),
+        "summary_concurrency",
+    ),
     ("embed", (JobKind.EMBED,), "embed_concurrency"),
     ("letsplay", (JobKind.LETSPLAY,), "letsplay_concurrency"),
 )

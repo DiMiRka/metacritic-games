@@ -36,6 +36,7 @@ class RunItemStage(StrEnum):
     EMBED = "embed"
     LETSPLAY = "letsplay"
     LETSPLAY_CONCLUDE = "letsplay_conclude"
+    TRANSLATE = "translate"
 
 
 class RunItemStatus(StrEnum):
