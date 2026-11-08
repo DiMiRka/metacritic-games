@@ -39,7 +39,7 @@ CLEANUP_JOB = "cleanup"
 # ограничения, цены и характер сбоев
 POOL_GROUPS = (
     ("metacritic", (JobKind.COLLECT, JobKind.SCRAPE_GAME), "scrape_concurrency"),
-    ("summarize", (JobKind.SUMMARIZE,), "summary_concurrency"),
+    ("summarize", (JobKind.SUMMARIZE, JobKind.LETSPLAY_CONCLUDE), "summary_concurrency"),
     ("embed", (JobKind.EMBED,), "embed_concurrency"),
     ("letsplay", (JobKind.LETSPLAY,), "letsplay_concurrency"),
 )
@@ -54,6 +54,8 @@ def build_pools(
     """Пул на группу; группа без обработчиков (например, letsplay без LLM) не запускается"""
     pools = []
     for name, kinds, limit_setting in POOL_GROUPS:
+        if not settings.pool_enabled(name):
+            continue
         group = {kind: types[kind] for kind in kinds if kind in types}
         if group:
             pools.append(
@@ -137,7 +139,7 @@ class Worker:
         await cleanup_heartbeats(self.session_factory)
         await self.heartbeat("idle")
         scheduler = AsyncIOScheduler(timezone=settings.tz)
-        if schedule:
+        if schedule and settings.worker_schedule:
             # next_run_time=None поставил бы задачу на паузу, передаём его только для старта сразу
             first = {"next_run_time": datetime.now(settings.tz)} if settings.crawl_on_start else {}
             scheduler.add_job(
@@ -181,11 +183,13 @@ class Worker:
 
 def build_stages(client: MetacriticClient, letsplays: LetsplaySource | None = None) -> CrawlStages:
     db = default_database()
+    # LLM нужна только пулу summarize: воркеру летсплеев её ключи не передаются вовсе
+    summarizer = build_summarizer() if settings.pool_enabled("summarize") else None
     return CrawlStages(
         client=client,
         engine=db.engine,
         session_factory=db.session_factory,
-        summarizer=build_summarizer(),
+        summarizer=summarizer,
         embedder=FastEmbedder(),
         letsplays=letsplays,
     )
@@ -197,7 +201,12 @@ async def run_worker() -> None:
         # Отдельный поток: опрос Prometheus не зависит от занятости цикла событий
         start_http_server(settings.worker_metrics_port)
         logger.info("метрики воркера на порту {}", settings.worker_metrics_port)
-    letsplays = YouTubeLetsplays(settings)
+    letsplays = None
+    if settings.pool_enabled("letsplay"):
+        if settings.youtube_api_key:
+            letsplays = YouTubeLetsplays(settings)
+        else:
+            logger.warning("YOUTUBE_API_KEY не задан: летсплеи не ищутся, пул letsplay не запущен")
     try:
         async with MetacriticClient() as client:
             worker = Worker(
@@ -211,7 +220,8 @@ async def run_worker() -> None:
                     loop.add_signal_handler(sig, worker.stop.set)
             await worker.run()
     finally:
-        await letsplays.aclose()
+        if letsplays:
+            await letsplays.aclose()
 
 
 async def wait_for_run(

@@ -87,10 +87,27 @@ async def run_pipeline(
     worker = Worker(stages, session_factory, "test-worker", dsn=dsn)
     task = asyncio.create_task(worker.run(schedule=False))
     try:
-        return await asyncio.wait_for(wait_for_run(session_factory, collect_id), 30)
+        run_id = await asyncio.wait_for(wait_for_run(session_factory, collect_id), 30)
+        if letsplays is not None:
+            await asyncio.wait_for(wait_for_background(session_factory), 30)
+        return run_id
     finally:
         worker.stop.set()
         await task
+
+
+async def wait_for_background(session_factory) -> None:
+    """Задачи вне прохода (летсплеи) тоже доделаны"""
+    from app.jobs.models import ACTIVE_STATUSES
+
+    while True:
+        async with session_factory() as session:
+            active = await session.scalar(
+                select(func.count()).select_from(Job).where(Job.status.in_(ACTIVE_STATUSES))
+            )
+        if not active:
+            return
+        await asyncio.sleep(0.05)
 
 
 async def items(session_factory, run_id) -> list[tuple[str, str, str]]:
@@ -140,7 +157,8 @@ async def test_full_run(db_engine, session_factory) -> None:
     assert summaries == 2
     assert embedded == 2
     assert state.phase == "browse"
-    assert jobs == {"collect": 1, "scrape_game": 3, "summarize": 2, "embed": 2}
+    # Летсплеи ставятся по каждой сохранённой игре, но вне прохода: он закрылся без них
+    assert jobs == {"collect": 1, "scrape_game": 3, "summarize": 2, "embed": 2, "letsplay": 2}
 
 
 async def test_upsert_is_idempotent_across_days(db_engine, session_factory, monkeypatch) -> None:

@@ -23,9 +23,27 @@ def test_no_shared_env_file() -> None:
         assert "env_file" not in service, name
 
 
-def test_api_keys_only_in_worker() -> None:
-    assert env("worker") >= SECRETS
-    assert not SECRETS & (env("web") | env("migrate"))
+LLM_KEYS = {"ANTHROPIC_API_KEY", "LLM_API_KEY"}
+YOUTUBE_SECRETS = {"YOUTUBE_API_KEY", "YOUTUBE_COOKIES_FILE"}
+
+
+def test_api_keys_only_where_used() -> None:
+    """Ключи LLM только у основного воркера, ключ и cookies YouTube только у worker-letsplay"""
+    assert env("worker") >= LLM_KEYS
+    assert env("worker-letsplay") >= YOUTUBE_SECRETS
+    for name in COMPOSE["services"]:
+        if name != "worker":
+            assert not LLM_KEYS & env(name), name
+        if name != "worker-letsplay":
+            assert not YOUTUBE_SECRETS & env(name), name
+
+
+def test_letsplay_worker_runs_only_letsplay_pool() -> None:
+    letsplay = COMPOSE["services"]["worker-letsplay"]["environment"]
+    worker = COMPOSE["services"]["worker"]["environment"]
+    assert letsplay["WORKER_POOLS"] == "letsplay"
+    assert letsplay["WORKER_SCHEDULE"] == "false"
+    assert "letsplay" not in worker["WORKER_POOLS"].split(",")
 
 
 def test_role_passwords_only_in_migrate() -> None:
@@ -34,14 +52,14 @@ def test_role_passwords_only_in_migrate() -> None:
 
 
 def test_every_setting_reaches_some_service() -> None:
-    passed = env("web") | env("worker") | env("migrate")
+    passed = env("web") | env("worker") | env("worker-letsplay") | env("migrate")
     missing = {name.upper() for name in Settings.model_fields} - passed
     assert not missing, f"добавьте в docker-compose.yml: {sorted(missing)}"
 
 
 def test_telegram_only_in_alertmanager() -> None:
     assert env("alertmanager") == TELEGRAM | {"DEADMAN_PING_URL"}
-    for name in ("web", "worker", "migrate", "prometheus"):
+    for name in ("web", "worker", "worker-letsplay", "migrate", "prometheus"):
         assert not TELEGRAM & env(name), name
 
 

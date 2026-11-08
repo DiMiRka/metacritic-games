@@ -18,4 +18,4 @@ scrape_configs:
   # Счётчики процесса воркера: Metacritic, LLM, задачи
   - job_name: worker
     static_configs:
-      - targets: ["worker:9100"]
+      - targets: ["worker:9100", "worker-letsplay:9100"]

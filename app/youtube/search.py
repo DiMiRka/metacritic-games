@@ -1,16 +1,19 @@
-"""Поиск летсплея: YouTube Data API, если задан ключ, иначе поиск yt-dlp без ключа.
-Кончилась дневная квота API — тот же запрос уходит в yt-dlp
+"""Поиск летсплея через YouTube Data API: search по релевантности, затем videos за точными
+просмотрами и длительностью. Без ключа летсплеи не ищутся. yt-dlp здесь не участвует:
+он нужен только для текста и звука ролика, которых API для чужих роликов не отдаёт
 """
 
-import asyncio
 import re
 import unicodedata
 from dataclasses import dataclass
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 from loguru import logger
 
-from app.youtube.errors import translate_ytdlp_error
+from app.core.errors import RetryableError
+from app.youtube.errors import YouTubeApiConfigError, YouTubeApiError
 
 API_URL = "https://www.googleapis.com/youtube/v3"
 SEARCH_RESULTS = 25
@@ -63,12 +66,12 @@ def about_other_game(video_title: str, game_title: str) -> bool:
     return bool((_words(video_title) & OTHER_GAMES) - _words(game_title))
 
 
-def pick_most_popular(
+def rank_candidates(
     candidates: list[Candidate], game_title: str, min_duration_seconds: int
-) -> Candidate | None:
-    """Самый просматриваемый ролик про эту игру, достаточно длинный для летсплея.
-    Трейлеры, нарезки и шортсы отсекает длительность. Если среди найденного есть ролики
-    с признаками летсплея в названии, выбор идёт среди них"""
+) -> list[Candidate]:
+    """Подходящие ролики про эту игру, от лучшего к худшему: сначала с признаками
+    прохождения в названии, внутри — по просмотрам. Трейлеры, нарезки и шортсы отсекает
+    длительность. Следующие по списку пригодятся, если в первом нет речи"""
     suitable = [
         c
         for c in candidates
@@ -76,8 +79,14 @@ def pick_most_popular(
         and mentions_game(c.title, game_title)
         and not about_other_game(c.title, game_title)
     ]
-    marked = [c for c in suitable if looks_like_letsplay(c.title)]
-    return max(marked or suitable, key=lambda c: c.views or 0, default=None)
+    return sorted(suitable, key=lambda c: (not looks_like_letsplay(c.title), -(c.views or 0)))
+
+
+def pick_most_popular(
+    candidates: list[Candidate], game_title: str, min_duration_seconds: int
+) -> Candidate | None:
+    ranked = rank_candidates(candidates, game_title, min_duration_seconds)
+    return ranked[0] if ranked else None
 
 
 def parse_iso_duration(value: str | None) -> int | None:
@@ -89,14 +98,76 @@ def parse_iso_duration(value: str | None) -> int | None:
     return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
 
 
-class QuotaExceededError(Exception):
-    """Дневная квота YouTube Data API исчерпана"""
+class QuotaExceededError(RetryableError):
+    """Дневная квота YouTube Data API исчерпана: летсплеи ждут её сброса"""
+
+
+# Причины из ответа API. Квота сбрасывается в полночь по тихоокеанскому времени
+QUOTA_REASONS = frozenset({"quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded"})
+# Ключ неверный, API не включён, ключ ограничен другим IP или приложением: само не пройдёт
+CONFIG_REASONS = frozenset(
+    {
+        "keyInvalid",
+        "keyExpired",
+        "accessNotConfigured",
+        "forbidden",
+        "ipRefererBlocked",
+        "API_KEY_INVALID",
+        "API_KEY_IP_ADDRESS_BLOCKED",
+        "API_KEY_SERVICE_BLOCKED",
+        "SERVICE_DISABLED",
+    }
+)
+PACIFIC = ZoneInfo("America/Los_Angeles")
+
+
+def _reasons(response: httpx.Response) -> set[str]:
+    try:
+        error = response.json().get("error", {})
+    except ValueError:
+        return set()
+    reasons = {e.get("reason") for e in error.get("errors", []) if e.get("reason")}
+    reasons |= {d.get("reason") for d in error.get("details", []) if d.get("reason")}
+    if status := error.get("status"):
+        reasons.add(status)
+    return reasons
+
+
+def next_quota_reset(now: datetime | None = None) -> datetime:
+    now = (now or datetime.now(UTC)).astimezone(PACIFIC)
+    midnight = datetime.combine(now.date() + timedelta(days=1), time.min, tzinfo=PACIFIC)
+    return midnight.astimezone(UTC)
+
+
+async def api_get(client: httpx.AsyncClient, api_key: str, method: str, params: dict) -> dict:
+    """Запрос к YouTube Data API. Ключ уходит заголовком, а не в URL: текст ошибки с адресом
+    запроса попадает в журналы, монитор и Sentry, и ключ не должен оказаться там"""
+    response = await client.get(
+        f"{API_URL}/{method}", params=params, headers={"X-Goog-Api-Key": api_key}
+    )
+    if response.is_success:
+        return response.json()
+    reasons = _reasons(response)
+    if reasons & QUOTA_REASONS:
+        raise QuotaExceededError(f"{method}: {sorted(reasons)}")
+    if response.status_code in (400, 401, 403) and (
+        reasons & CONFIG_REASONS or response.status_code in (401, 403)
+    ):
+        raise YouTubeApiConfigError(
+            f"YouTube Data API {method}: HTTP {response.status_code} {sorted(reasons)}. "
+            "Проверьте YOUTUBE_API_KEY, ограничения ключа и что YouTube Data API v3 включён"
+        )
+    raise YouTubeApiError(
+        response.status_code, f"{method}: HTTP {response.status_code} {sorted(reasons)}"
+    )
 
 
 async def search_api(client: httpx.AsyncClient, api_key: str, query: str) -> list[Candidate]:
-    found = await client.get(
-        f"{API_URL}/search",
-        params={
+    found = await api_get(
+        client,
+        api_key,
+        "search",
+        {
             "part": "id",
             "q": query,
             "type": "video",
@@ -104,20 +175,17 @@ async def search_api(client: httpx.AsyncClient, api_key: str, query: str) -> lis
             # и отдаёт просто популярные ролики про игру. Популярность выбирается уже среди них
             "order": "relevance",
             "maxResults": SEARCH_RESULTS,
-            "key": api_key,
         },
     )
-    if found.status_code == 403 and "quota" in found.text.lower():
-        raise QuotaExceededError(found.text[:200])
-    found.raise_for_status()
-    ids = [item["id"]["videoId"] for item in found.json().get("items", [])]
+    ids = [item["id"]["videoId"] for item in found.get("items", [])]
     if not ids:
         return []
-    details = await client.get(
-        f"{API_URL}/videos",
-        params={"part": "snippet,statistics,contentDetails", "id": ",".join(ids), "key": api_key},
+    details = await api_get(
+        client,
+        api_key,
+        "videos",
+        {"part": "snippet,statistics,contentDetails", "id": ",".join(ids)},
     )
-    details.raise_for_status()
     return [
         Candidate(
             video_id=item["id"],
@@ -126,42 +194,39 @@ async def search_api(client: httpx.AsyncClient, api_key: str, query: str) -> lis
             views=int(item.get("statistics", {}).get("viewCount", 0)) or None,
             duration_seconds=parse_iso_duration(item.get("contentDetails", {}).get("duration")),
         )
-        for item in details.json().get("items", [])
+        for item in details.get("items", [])
     ]
 
 
-def _search_ytdlp_sync(query: str, options: dict) -> list[Candidate]:
-    import yt_dlp
+class SearchQuota:
+    """Помнит, что квота кончилась: до сброса API не вызывается вовсе.
+    Хранится в памяти процесса: после перезапуска это будет стоить один запрос"""
 
-    params = {**options, "extract_flat": "in_playlist", "skip_download": True}
-    try:
-        with yt_dlp.YoutubeDL(params) as ydl:
-            found = ydl.extract_info(f"ytsearch{SEARCH_RESULTS}:{query}", download=False)
-    except yt_dlp.utils.DownloadError as exc:
-        raise translate_ytdlp_error(exc) from exc
-    return [
-        Candidate(
-            video_id=entry["id"],
-            title=entry.get("title") or "",
-            channel=entry.get("channel") or entry.get("uploader"),
-            views=entry.get("view_count"),
-            duration_seconds=int(entry["duration"]) if entry.get("duration") else None,
-        )
-        for entry in found.get("entries") or []
-        if entry.get("id")
-    ]
+    def __init__(self) -> None:
+        self.exhausted_until: datetime | None = None
 
+    def available(self, now: datetime | None = None) -> bool:
+        return self.exhausted_until is None or (now or datetime.now(UTC)) >= self.exhausted_until
 
-async def search_ytdlp(query: str, options: dict) -> list[Candidate]:
-    return await asyncio.to_thread(_search_ytdlp_sync, query, options)
+    def exhausted(self, now: datetime | None = None) -> None:
+        self.exhausted_until = next_quota_reset(now)
 
 
 async def search(
-    client: httpx.AsyncClient, api_key: str, query: str, ytdlp_options: dict
+    client: httpx.AsyncClient, api_key: str, query: str, quota: SearchQuota | None = None
 ) -> list[Candidate]:
-    if api_key:
-        try:
-            return await search_api(client, api_key, query)
-        except QuotaExceededError:
-            logger.warning("квота YouTube Data API исчерпана, поиск через yt-dlp")
-    return await search_ytdlp(query, ytdlp_options)
+    """Пока квота исчерпана, API не вызывается: ошибка сразу, автомат youtube откладывает
+    задачи до сброса без траты попыток"""
+    quota = quota or SearchQuota()
+    if not quota.available():
+        raise QuotaExceededError(
+            f"квота YouTube Data API исчерпана до {quota.exhausted_until:%Y-%m-%d %H:%M} UTC"
+        )
+    try:
+        return await search_api(client, api_key, query)
+    except QuotaExceededError:
+        quota.exhausted()
+        logger.warning(
+            "квота YouTube Data API исчерпана до {:%Y-%m-%d %H:%M} UTC", quota.exhausted_until
+        )
+        raise

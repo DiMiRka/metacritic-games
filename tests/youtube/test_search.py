@@ -1,7 +1,6 @@
 import httpx
 import pytest
 
-from app.youtube import search as search_module
 from app.youtube.search import (
     Candidate,
     mentions_game,
@@ -85,34 +84,29 @@ def api_transport(quota: bool = False):
 
 async def test_search_api_reads_views_and_durations() -> None:
     async with httpx.AsyncClient(transport=api_transport()) as client:
-        found = await search(client, "key", "Hades let's play", {})
+        found = await search(client, "key", "Hades let's play")
     assert [(c.video_id, c.views, c.duration_seconds, c.channel) for c in found] == [
         ("v1", 1200, 3600, "A"),
         ("v2", 90, 1800, "B"),
     ]
 
 
-async def test_quota_falls_back_to_ytdlp(monkeypatch) -> None:
-    async def ytdlp(query, options):
-        return [video("y1", "Hades", 5, 60)]
+async def test_quota_raises_and_is_remembered_without_calling_api() -> None:
+    from app.youtube.search import QuotaExceededError, SearchQuota
 
-    monkeypatch.setattr(search_module, "search_ytdlp", ytdlp)
-    async with httpx.AsyncClient(transport=api_transport(quota=True)) as client:
-        found = await search(client, "key", "Hades let's play", {})
-    assert [c.video_id for c in found] == ["y1"]
+    calls: list[str] = []
 
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return api_transport(quota=True).handler(request)
 
-async def test_no_key_uses_ytdlp(monkeypatch) -> None:
-    calls = []
-
-    async def ytdlp(query, options):
-        calls.append(query)
-        return []
-
-    monkeypatch.setattr(search_module, "search_ytdlp", ytdlp)
-    async with httpx.AsyncClient(transport=api_transport()) as client:
-        assert await search(client, "", "Hades let's play", {}) == []
-    assert calls == ["Hades let's play"]
+    quota = SearchQuota()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        for _ in range(2):
+            with pytest.raises(QuotaExceededError):
+                await search(client, "key", "Hades let's play", quota)
+    assert calls == ["/youtube/v3/search"]
+    assert not quota.available()
 
 
 @pytest.mark.parametrize(
@@ -141,3 +135,97 @@ def test_prefers_letsplay_titles_and_skips_parodies_in_other_games() -> None:
     # Слово из названия самой игры другим ролик не делает
     mc = [video("m", "Minecraft Dungeons let's play", 5, 60)]
     assert pick_most_popular(mc, "Minecraft Dungeons", 600).video_id == "m"
+
+
+KEY = "AIzaSy-secret-test-key"
+
+
+def error_response(status: int, reason: str) -> httpx.Response:
+    body = {"error": {"code": status, "errors": [{"reason": reason}], "status": "X"}}
+    return httpx.Response(status, json=body)
+
+
+async def run_api(handler, quota=None):
+    from app.youtube.search import SearchQuota
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        return await search(client, KEY, "Hades let's play", quota or SearchQuota())
+
+
+async def test_key_sent_in_header_never_in_url_or_errors() -> None:
+    from app.youtube.errors import YouTubeApiError
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(500, text="backend error")
+
+    with pytest.raises(YouTubeApiError) as caught:
+        await run_api(handler)
+    assert seen[0].headers["X-Goog-Api-Key"] == KEY
+    assert KEY not in str(seen[0].url)
+    assert KEY not in str(caught.value)
+    assert caught.value.status == 500
+
+
+@pytest.mark.parametrize(
+    "reason", ["keyInvalid", "accessNotConfigured", "forbidden", "ipRefererBlocked"]
+)
+async def test_misconfigured_key_raises_config_error(reason) -> None:
+    from app.youtube.errors import YouTubeApiConfigError
+
+    with pytest.raises(YouTubeApiConfigError) as caught:
+        await run_api(lambda request: error_response(403, reason))
+    assert reason in str(caught.value) and KEY not in str(caught.value)
+
+
+async def test_plain_403_is_config_error_too() -> None:
+    from app.youtube.errors import YouTubeApiConfigError
+
+    with pytest.raises(YouTubeApiConfigError):
+        await run_api(lambda request: httpx.Response(403, text="Forbidden"))
+
+
+async def test_quota_on_videos_list_is_detected_too() -> None:
+    from app.youtube.search import QuotaExceededError, SearchQuota
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/search"):
+            return httpx.Response(200, json={"items": [{"id": {"videoId": "v1"}}]})
+        return error_response(403, "quotaExceeded")
+
+    quota = SearchQuota()
+    with pytest.raises(QuotaExceededError):
+        await run_api(handler, quota)
+    assert not quota.available()
+
+
+def test_quota_resets_at_pacific_midnight() -> None:
+    from datetime import UTC, datetime
+
+    from app.youtube.search import SearchQuota, next_quota_reset
+
+    # 06.11 20:00 UTC — это 12:00 в Лос-Анджелесе, сброс в 00:00 по Тихоокеанскому = 08:00 UTC
+    now = datetime(2026, 11, 6, 20, 0, tzinfo=UTC)
+    assert next_quota_reset(now) == datetime(2026, 11, 7, 8, 0, tzinfo=UTC)
+    quota = SearchQuota()
+    quota.exhausted(now)
+    assert not quota.available(datetime(2026, 11, 7, 7, 59, tzinfo=UTC))
+    assert quota.available(datetime(2026, 11, 7, 8, 0, tzinfo=UTC))
+
+
+def test_rank_candidates_letsplays_first_then_by_views() -> None:
+    from app.youtube.search import rank_candidates
+
+    candidates = [
+        video("review", "Hades review", 3_000_000, 15),
+        video("lp2", "Hades #2", 500_000, 40),
+        video("lp1", "Hades let's play part 1", 900_000, 60),
+        video("short", "Hades let's play", 9_000_000, 2),
+    ]
+    assert [c.video_id for c in rank_candidates(candidates, "Hades", 600)] == [
+        "lp1",
+        "lp2",
+        "review",
+    ]

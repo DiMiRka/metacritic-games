@@ -123,6 +123,8 @@ services:
       WORKER_HEALTH_FILE: /tmp/worker-alive
       # Метрики процесса воркера, порт открыт только во внутренней сети backend
       WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9100}
+      # Летсплеи расшифровывает отдельный worker-letsplay, здесь только заключения по ним
+      WORKER_POOLS: metacritic,summarize,embed
       BATCH_SIZE:
       CRAWL_INTERVAL_MINUTES:
       MANUAL_RUN_COOLDOWN_MINUTES:
@@ -153,23 +155,73 @@ services:
       ANTHROPIC_API_KEY:
       LLM_API_KEY:
       LLM_BASE_URL:
-      YOUTUBE_API_KEY:
-      YOUTUBE_COOKIES_FILE:
-      LETSPLAY_MIN_DURATION_MINUTES:
-      LETSPLAY_TRANSCRIBER:
-      LETSPLAY_MAX_AUDIO_MINUTES:
+      LETSPLAY_ENABLED:
       LETSPLAY_MAX_TRANSCRIPT_CHARS:
       LETSPLAY_REFRESH_DAYS:
-      WHISPER_MODEL:
-      WHISPER_THREADS:
       EMBEDDING_MODEL:
       EMBEDDING_CACHE_DIR:
     volumes:
       - models:/srv/data/models
-    # Воркеру нужен интернет: Metacritic, LLM, YouTube
+    # Воркеру нужен интернет: Metacritic и LLM
     networks: [backend, egress]
-    # Запас под расшифровку речи faster-whisper
-    mem_limit: 3g
+    mem_limit: 1536m
+    cpus: 1.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/worker-alive') > 60)"]
+      interval: 20s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Летсплеи: поиск на YouTube и распознавание речи Whisper. Отдельный процесс со своими
+  # лимитами: Whisper занимает весь выданный CPU и не должен тормозить обход, продление аренд
+  # и heartbeat основного воркера. Заключения по расшифровкам пишет основной воркер
+  worker-letsplay:
+    <<: *app
+    image: ${IMAGE_PREFIX:-ghcr.io/dimirka/metacritic-games}-worker:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      target: worker
+    command: ["python", "-m", "app", "worker"]
+    stop_grace_period: 45s
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql+asyncpg://app_worker:${APP_WORKER_DB_PASSWORD:?задайте APP_WORKER_DB_PASSWORD в .env}@db:5432/${POSTGRES_DB}
+      WORKER_POOLS: letsplay
+      # Расписание и очистку ведёт основной воркер
+      WORKER_SCHEDULE: "false"
+      HF_HOME: /srv/data/models/hf
+      WORKER_HEALTH_FILE: /tmp/worker-alive
+      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9100}
+      JOB_LEASE_SECONDS:
+      JOB_MAX_ATTEMPTS:
+      JOB_POLL_SECONDS:
+      JOB_RETRY_BASE_SECONDS:
+      JOB_RETRY_MAX_SECONDS:
+      LETSPLAY_CONCURRENCY:
+      WORKER_SHUTDOWN_GRACE_SECONDS:
+      BREAKER_METACRITIC_THRESHOLD:
+      BREAKER_LLM_OPEN_SECONDS:
+      BREAKER_PROBE_SECONDS:
+      YOUTUBE_API_KEY:
+      YOUTUBE_COOKIES_FILE:
+      LETSPLAY_MIN_DURATION_MINUTES:
+      LETSPLAY_MAX_CANDIDATES:
+      LETSPLAY_TRANSCRIBER:
+      LETSPLAY_MAX_AUDIO_MINUTES:
+      WHISPER_MODEL:
+      WHISPER_THREADS:
+      EMBEDDING_CACHE_DIR:
+    volumes:
+      - models:/srv/data/models
+      # Cookies отдельного аккаунта, только для чтения (README, раздел «Летсплеи»):
+      # - ./secrets/youtube-cookies.txt:/run/secrets/youtube-cookies.txt:ro
+    networks: [backend, egress]
+    # faster-whisper small в int8 и буфер аудио
+    mem_limit: 2g
     cpus: 1.5
     healthcheck:
       test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/worker-alive') > 60)"]

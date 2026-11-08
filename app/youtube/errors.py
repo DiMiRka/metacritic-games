@@ -18,6 +18,19 @@ class YouTubeBlockedError(RetryableError):
     """YouTube не отдаёт данные этому адресу: нужна пауза, cookies или другой IP"""
 
 
+class YouTubeApiConfigError(RetryableError):
+    """Ключ YouTube Data API не принят: неверный, ограничен другим IP или API не включён.
+    Повторяемая, чтобы задачи дождались исправления, а автомат youtube открывается сразу"""
+
+
+class YouTubeApiError(RetryableError):
+    """Прочие ошибки API, без URL запроса: в нём ключ"""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 class VideoUnavailableError(PermanentError):
     pass
 

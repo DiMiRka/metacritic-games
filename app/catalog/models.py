@@ -30,6 +30,8 @@ class ReviewSource(StrEnum):
 
 class LetsplayStatus(StrEnum):
     PENDING = "pending"
+    # Расшифровка сохранена, заключение ещё не готово
+    TRANSCRIBED = "transcribed"
     DONE = "done"
     NOT_FOUND = "not_found"
     FAILED = "failed"

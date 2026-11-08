@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     embed_concurrency: int = 1
     letsplay_concurrency: int = 1
     worker_shutdown_grace_seconds: float = 30.0
+    # Какие пулы запускает этот процесс воркера, через запятую: metacritic, summarize, embed,
+    # letsplay. Пусто — все. Так тяжёлый Whisper живёт в отдельном контейнере worker-letsplay
+    worker_pools: str = ""
+    # Ставить ли проход по расписанию и ночную очистку: нужно ровно одному воркеру
+    worker_schedule: bool = True
     # Файл, который воркер обновляет после каждого удачного heartbeat, для healthcheck в compose
     worker_health_file: str = ""
     # Порты метрик Prometheus во внутренней сети, 0: не поднимать
@@ -102,12 +107,17 @@ class Settings(BaseSettings):
     # Цена модели резюме в $ за миллион токенов, 0: монитор не показывает стоимость
     llm_price_input_per_mtok: float = 0
     llm_price_output_per_mtok: float = 0
-    # Летсплеи: поиск через YouTube Data API, если задан ключ, иначе через yt-dlp без ключа
+    # Ставить ли задачи летсплеев после сохранения игры. Выполняет их воркер с пулом letsplay
+    letsplay_enabled: bool = True
+    # Летсплеи ищутся через YouTube Data API, без ключа пул letsplay не запускается
     youtube_api_key: str = ""
     # Файл cookies в формате Netscape на случай, если YouTube требует подтвердить, что не бот
     youtube_cookies_file: str = ""
     # Ролики короче считаются трейлерами и нарезками, а не летсплеями
     letsplay_min_duration_minutes: int = 10
+    # Сколько роликов пробовать по очереди, если в первом нет речи: прохождения без
+    # комментариев. Каждая неудачная попытка — запуск Whisper на начале ролика
+    letsplay_max_candidates: int = 3
     # Откуда брать речь: субтитры, Whisper или сначала субтитры, потом Whisper
     letsplay_transcriber: Literal["auto", "captions", "whisper"] = "auto"
     # Whisper слушает только начало ролика
@@ -149,6 +159,10 @@ class Settings(BaseSettings):
     @property
     def is_prod(self) -> bool:
         return self.env == "prod"
+
+    def pool_enabled(self, name: str) -> bool:
+        names = {p.strip() for p in self.worker_pools.split(",") if p.strip()}
+        return not names or name in names
 
     @property
     def secret_keys(self) -> list[str]:

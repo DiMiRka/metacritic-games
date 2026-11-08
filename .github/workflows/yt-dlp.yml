@@ -1,0 +1,46 @@
+name: yt-dlp
+
+# YouTube регулярно ломает старые версии yt-dlp, а Dependabot обновляет uv.lock раз в неделю.
+# Здесь только yt-dlp и каждый день: новая версия приходит пул-реквестом с изменённым uv.lock
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.6"
+      - id: bump
+        run: |
+          current() { uv export --frozen --no-hashes --extra worker --no-emit-project | grep -i '^yt-dlp==' | cut -d= -f3; }
+          before=$(current)
+          uv lock --upgrade-package yt-dlp
+          after=$(current)
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "after=$after" >> "$GITHUB_OUTPUT"
+      # Пул-реквест, созданный GITHUB_TOKEN, не запускает CI. Чтобы проверки шли сами,
+      # добавьте секрет DEPS_PR_TOKEN (fine-grained токен с правами contents и pull requests)
+      - if: steps.bump.outputs.before != steps.bump.outputs.after
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ secrets.DEPS_PR_TOKEN || github.token }}
+          branch: deps/yt-dlp
+          delete-branch: true
+          add-paths: uv.lock
+          commit-message: "yt-dlp ${{ steps.bump.outputs.after }}"
+          title: "yt-dlp ${{ steps.bump.outputs.before }} → ${{ steps.bump.outputs.after }}"
+          body: |
+            Ежедневное обновление yt-dlp: YouTube часто меняет страницы, и старые версии
+            перестают находить ролики, субтитры и аудио.
+
+            После слияния образ воркера пересоберёт CI, на сервере:
+            `docker compose pull worker-letsplay && docker compose up -d worker-letsplay`

@@ -24,6 +24,7 @@ class JobKind(StrEnum):
     SUMMARIZE = "summarize"
     EMBED = "embed"
     LETSPLAY = "letsplay"
+    LETSPLAY_CONCLUDE = "letsplay_conclude"
 
 
 class JobStatus(StrEnum):

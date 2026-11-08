@@ -152,26 +152,36 @@ class FakeSummarizer:
 
 
 class FakeLetsplays:
-    """Подменяет YouTube: один и тот же популярный ролик или ничего"""
+    """Подменяет YouTube: ролики от самого популярного, в некоторых нет речи"""
 
-    def __init__(self, video_id: str | None = "abc123def45", fail: Exception | None = None):
-        self.video_id = video_id
+    def __init__(
+        self,
+        video_id: str | None = "abc123def45",
+        fail: Exception | None = None,
+        videos: list[str] | None = None,
+        silent: set[str] | None = None,
+    ):
+        self.videos = videos if videos is not None else ([video_id] if video_id else [])
         self.fail = fail
+        self.silent = silent or set()
         self.searches: list[str] = []
         self.transcribed: list[str] = []
 
-    async def find(self, game_title: str) -> Candidate | None:
+    async def find(self, game_title: str) -> list[Candidate]:
         self.searches.append(game_title)
-        if self.video_id is None:
-            return None
-        return Candidate(
-            self.video_id, f"{game_title} - Let's Play Part 1", "Канал", 1_000_000, 3600
-        )
+        return [
+            Candidate(video, f"{game_title} - Let's Play Part {n}", "Канал", 1_000_001 - n, 3600)
+            for n, video in enumerate(self.videos, 1)
+        ]
 
     async def transcript(self, candidate: Candidate) -> Transcript:
+        from app.youtube.errors import NoSpeechError
+
         self.transcribed.append(candidate.video_id)
         if self.fail:
             raise self.fail
+        if candidate.video_id in self.silent:
+            raise NoSpeechError("прохождение без комментариев")
         return Transcript("Привет всем, сегодня играем. " * 20, "ru", "captions")
 
 

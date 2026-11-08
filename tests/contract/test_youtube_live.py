@@ -12,6 +12,7 @@ from app.youtube.client import YouTubeLetsplays
 pytestmark = [
     pytest.mark.live,
     pytest.mark.skipif(not os.environ.get("RUN_LIVE"), reason="нужен RUN_LIVE=1 и сеть"),
+    pytest.mark.skipif(not Settings().youtube_api_key, reason="нужен YOUTUBE_API_KEY"),
 ]
 
 

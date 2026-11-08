@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.core.errors import PermanentError
 from app.core.logs import log_context
 from app.crawler.cursor import Cursor, collect_batch
-from app.crawler.letsplay import LetsplayWork, letsplay_due, mark_failed
+from app.crawler.letsplay import LetsplayConclude, LetsplayTranscribe, letsplay_due, mark_failed
 from app.crawler.lock import try_lock, unlock
 from app.crawler.models import CrawlPhase, CrawlState, RunItemStage, RunItemStatus
 from app.crawler.processor import (
@@ -139,7 +139,9 @@ async def enqueue_derived(
             JobKind.LETSPLAY,
             {"game_id": game_id},
             dedupe_key=f"letsplay:{game_id}",
-            run_id=run_id,
+            # Без прохода: летсплеи идут минутами и в отдельном сервисе. Проход не должен
+            # ждать Whisper, а остановленный worker-letsplay не должен держать его открытым
+            run_id=None,
         )
         derived.letsplays += job_id is not None
     return derived
@@ -163,11 +165,12 @@ class CrawlStages:
     ) -> None:
         self.client = client
         # Заключению по летсплею нужна LLM: без неё этап не запускается
-        self.letsplays = (
-            LetsplayWork(
-                session_factory, letsplays, summarizer, settings.letsplay_max_transcript_chars
-            )
-            if letsplays and summarizer
+        # Расшифровке нужен только YouTube, заключению только LLM: это могут быть разные
+        # процессы, например worker-letsplay и основной воркер
+        self.transcriber = LetsplayTranscribe(session_factory, letsplays) if letsplays else None
+        self.concluder = (
+            LetsplayConclude(session_factory, summarizer, settings.letsplay_max_transcript_chars)
+            if summarizer
             else None
         )
         self.engine = engine
@@ -185,8 +188,12 @@ class CrawlStages:
             types[JobKind.SUMMARIZE] = JobType(self.summarize, self._summarize_finished)
         if self.embedder:
             types[JobKind.EMBED] = JobType(self.embed, self._embed_finished)
-        if self.letsplays:
+        if self.transcriber:
             types[JobKind.LETSPLAY] = JobType(self.letsplay, self._letsplay_finished)
+        if self.concluder:
+            types[JobKind.LETSPLAY_CONCLUDE] = JobType(
+                self.letsplay_conclude, self._letsplay_conclude_finished
+            )
         return types
 
     # collect
@@ -295,7 +302,7 @@ class CrawlStages:
             run_id=run_id,
             summary_model=self.summarizer.model if self.summarizer else None,
             embed_model=self.embedder.model if self.embedder else None,
-            letsplay=self.letsplays is not None,
+            letsplay=settings.letsplay_enabled,
         )
 
     async def _scrape_finished(self, session: AsyncSession, job: ClaimedJob, finish: Finish):
@@ -357,14 +364,28 @@ class CrawlStages:
     # letsplay
 
     async def letsplay(self, job: ClaimedJob) -> StageResult:
-        result = await self.letsplays.run(job.payload["game_id"])
+        result = await self.transcriber.run(job.payload["game_id"], job.run_id)
         return StageResult(result.game_id, result.changed)
 
+    async def letsplay_conclude(self, job: ClaimedJob) -> StageResult:
+        result = await self.concluder.run(job.payload["game_id"])
+        return StageResult(result.game_id, result.changed)
+
+    async def _letsplay_conclude_finished(
+        self, session: AsyncSession, job: ClaimedJob, finish: Finish
+    ):
+        await self._finish_letsplay(session, job, finish, RunItemStage.LETSPLAY_CONCLUDE)
+
     async def _letsplay_finished(self, session: AsyncSession, job: ClaimedJob, finish: Finish):
+        await self._finish_letsplay(session, job, finish, RunItemStage.LETSPLAY)
+
+    async def _finish_letsplay(
+        self, session: AsyncSession, job: ClaimedJob, finish: Finish, stage: str
+    ) -> None:
         game_id = job.payload.get("game_id")
         if finish.status == "dead" and game_id is not None:
             await mark_failed(session, game_id, finish.error_text or "ошибка")
         changed = finish.result.changed if finish.result else False
         status = RunItemStatus.UPDATED if changed else RunItemStatus.SKIPPED
-        info = ItemInfo(RunItemStage.LETSPLAY, None, game_id, status)
+        info = ItemInfo(stage, None, game_id, status)
         await record_item(session, job, finish, info)

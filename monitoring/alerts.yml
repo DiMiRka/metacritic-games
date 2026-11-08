@@ -40,6 +40,19 @@ groups:
         annotations:
           summary: "Metacritic ответил 429 {{ $value | humanize }} раз за 30 минут"
 
+      # Задачи летсплеев падают или повторяются, а ни одной расшифровки за 12 часов нет:
+      # чаще всего YouTube сломал текущую версию yt-dlp. Ролики без летсплея («не найдено»)
+      # и тот же ролик при повторной проверке сюда не попадают: это успешные задачи
+      - alert: LetsplayTranscriptsStalled
+        expr: >
+          sum(increase(jobs_finished_total{kind="letsplay", status=~"dead|queued"}[12h])) >= 5
+          and on()
+          (sum(increase(letsplay_transcripts_total[12h])) or vector(0)) == 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Летсплеи не расшифровываются 12 часов: проверьте yt-dlp и docker compose logs worker-letsplay"
+
       - alert: CircuitBreakerOpen
         expr: breaker_open == 1
         for: 15m

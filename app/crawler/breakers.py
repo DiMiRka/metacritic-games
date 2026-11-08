@@ -12,7 +12,8 @@ from app.crawler.processor import ScrapeFormatError
 from app.jobs.breaker import BreakerPolicy, Verdict, gate, record
 from app.jobs.models import JobKind
 from app.jobs.queue import ClaimedJob
-from app.youtube.errors import YouTubeBlockedError
+from app.youtube.errors import YouTubeApiConfigError, YouTubeApiError, YouTubeBlockedError
+from app.youtube.search import QuotaExceededError
 
 _AUTH_ERRORS = (
     anthropic.AuthenticationError,
@@ -60,17 +61,20 @@ def judge_llm(error: BaseException | None) -> Verdict:
 
 
 def judge_youtube(error: BaseException | None) -> Verdict:
-    """Проверка «не бот ли вы» открывает сразу: следующие запросы с этого адреса ждёт то же"""
+    """Проверка «не бот ли вы», непринятый ключ и исчерпанная квота API открывают сразу:
+    следующие запросы ждёт то же самое, пока не вмешается человек или не сбросится квота"""
     if error is None:
         return Verdict.SUCCESS
-    if isinstance(error, YouTubeBlockedError):
+    if isinstance(error, YouTubeBlockedError | YouTubeApiConfigError | QuotaExceededError):
         return Verdict.TRIP
+    if isinstance(error, YouTubeApiError):
+        return Verdict.FAILURE if error.status == 429 or error.status >= 500 else Verdict.SUCCESS
     if isinstance(error, httpx.HTTPStatusError):
         status = error.response.status_code
         return Verdict.FAILURE if status == 429 or status >= 500 else Verdict.SUCCESS
     if isinstance(error, _TRANSPORT):
         return Verdict.NEUTRAL
-    # Ролик недоступен, нет речи, ошибка LLM: сам YouTube ответил нормально
+    # Ролик недоступен, нет речи: сам YouTube ответил нормально
     return Verdict.SUCCESS
 
 
@@ -102,6 +106,8 @@ POLICY_BY_KIND = {
     JobKind.SCRAPE_GAME: METACRITIC,
     JobKind.SUMMARIZE: LLM,
     JobKind.LETSPLAY: YOUTUBE,
+    # Заключение по летсплею делает LLM: кончилась квота — ждёт вместе с резюме отзывов
+    JobKind.LETSPLAY_CONCLUDE: LLM,
 }
 
 

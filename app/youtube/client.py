@@ -5,12 +5,12 @@ from typing import Protocol
 import httpx
 
 from app.core.config import Settings
-from app.youtube.search import Candidate, pick_most_popular, query_for, search
+from app.youtube.search import Candidate, SearchQuota, query_for, rank_candidates, search
 from app.youtube.transcript import Transcript, TranscriptFetcher, WhisperTranscriber
 
 
 class LetsplaySource(Protocol):
-    async def find(self, game_title: str) -> Candidate | None: ...
+    async def find(self, game_title: str) -> list[Candidate]: ...
 
     async def transcript(self, candidate: Candidate) -> Transcript: ...
 
@@ -23,8 +23,8 @@ class YouTubeLetsplays:
         if config.youtube_cookies_file:
             # Cookies аккаунта помогают, когда YouTube просит подтвердить, что запрос не от бота
             options["cookiefile"] = config.youtube_cookies_file
-        self.ytdlp_options = options
         self.http = httpx.AsyncClient(timeout=30)
+        self.quota = SearchQuota()
         self.transcripts = TranscriptFetcher(
             options,
             WhisperTranscriber(
@@ -36,9 +36,10 @@ class YouTubeLetsplays:
             max_audio_minutes=config.letsplay_max_audio_minutes,
         )
 
-    async def find(self, game_title: str) -> Candidate | None:
-        found = await search(self.http, self.api_key, query_for(game_title), self.ytdlp_options)
-        return pick_most_popular(found, game_title, self.min_duration)
+    async def find(self, game_title: str) -> list[Candidate]:
+        """Подходящие ролики от лучшего к худшему, пусто — летсплея нет"""
+        found = await search(self.http, self.api_key, query_for(game_title), self.quota)
+        return rank_candidates(found, game_title, self.min_duration)
 
     async def transcript(self, candidate: Candidate) -> Transcript:
         return await self.transcripts.fetch(candidate.url)

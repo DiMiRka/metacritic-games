@@ -5,6 +5,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # yt-dlp обновляется каждый день отдельным workflow (.github/workflows/yt-dlp.yml)
+    ignore:
+      - dependency-name: yt-dlp
     groups:
       python:
         patterns: ["*"]
