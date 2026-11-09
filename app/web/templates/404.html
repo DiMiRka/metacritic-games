@@ -3,9 +3,10 @@
 {% block title %}Игра не найдена — Игры Metacritic{% endblock %}
 
 {% block content %}
-<div class="empty">
-  <h1>Игра не найдена</h1>
-  <p class="muted">В базе нет игры «{{ slug }}». Возможно, обход до неё ещё не дошёл</p>
-  <a href="/">← К каталогу</a>
+<div class="signal">
+  <p class="signal__code" aria-hidden="true">404</p>
+  <h1>Сигнал потерян</h1>
+  <p class="muted">Игра не найдена: в базе нет «{{ slug }}». Возможно, обход до неё ещё не дошёл</p>
+  <a class="button button--secondary" href="/">В каталог</a>
 </div>
 {% endblock %}

@@ -22,8 +22,8 @@ class GameFilters:
     @property
     def effective_sort(self) -> Sort:
         if self.sort == "relevance" and not self.q:
-            return "date"
-        return self.sort or ("relevance" if self.q else "date")
+            return "metascore"
+        return self.sort or ("relevance" if self.q else "metascore")
 
 
 @dataclass
@@ -80,7 +80,11 @@ async def list_games(session: AsyncSession, filters: GameFilters) -> GamePage:
     order = {
         "relevance": [func.similarity(Game.title, q).desc()],
         "date": [Game.release_date.desc().nulls_last()],
-        "metascore": [scores.c.metascore.desc().nulls_last()],
+        # При равном Metascore выше более новая игра
+        "metascore": [
+            scores.c.metascore.desc().nulls_last(),
+            Game.release_date.desc().nulls_last(),
+        ],
         "userscore": [scores.c.userscore.desc().nulls_last()],
         "title": [func.lower(Game.title)],
     }[filters.effective_sort]

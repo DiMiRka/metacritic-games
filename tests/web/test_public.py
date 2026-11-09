@@ -69,13 +69,26 @@ async def slugs(client: AsyncClient, **params) -> list[str]:
     return [item["slug"] for item in response.json()["items"]]
 
 
-async def test_default_sort_is_newest_first(client) -> None:
+async def test_default_sort_is_metascore_desc(client) -> None:
     assert await slugs(client) == [
+        "elden-ring",
+        "stardew-valley",
+        "elden-ring-nightreign",
+        "fresh-game",
+    ]
+
+
+async def test_sort_by_date_newest_first(client) -> None:
+    assert await slugs(client, sort="date") == [
         "fresh-game",
         "elden-ring-nightreign",
         "elden-ring",
         "stardew-valley",
     ]
+
+
+async def test_relevance_without_query_falls_back_to_metascore(client) -> None:
+    assert await slugs(client, sort="relevance") == await slugs(client)
 
 
 async def test_sort_by_metascore_puts_missing_last(client) -> None:
@@ -120,7 +133,7 @@ async def test_pagination(client, monkeypatch) -> None:
     clamped = (await client.get("/api/v1/games", params={"page": 99})).json()
 
     assert (first["total"], first["pages"], len(first["items"])) == (4, 2, 3)
-    assert [i["slug"] for i in last["items"]] == ["stardew-valley"]
+    assert [i["slug"] for i in last["items"]] == ["fresh-game"]
     assert clamped["page"] == 2
 
 

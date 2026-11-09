@@ -21,10 +21,10 @@ from app.web.deps import Session, load_auth
 from app.web.middleware.ratelimit import api_limit, catalog_limit
 from app.web.templating import templates_of
 
-# Без явной сортировки: новые сверху, а при поиске — по совпадению с запросом
+# Без явной сортировки: по Metascore, а при поиске — по совпадению с запросом
 SORT_LABELS = {
-    "date": "Сначала новые",
     "metascore": "По Metascore",
+    "date": "Сначала новые",
     "userscore": "По оценке игроков",
     "title": "По названию",
 }

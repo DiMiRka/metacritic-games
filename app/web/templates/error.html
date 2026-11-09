@@ -3,9 +3,10 @@
 {% block title %}{{ title }} — Игры Metacritic{% endblock %}
 
 {% block content %}
-<div class="empty">
+<div class="signal">
+  {% if code %}<p class="signal__code" aria-hidden="true">{{ code }}</p>{% endif %}
   <h1>{{ title }}</h1>
   <p class="muted">{{ message }}</p>
-  <a href="/">← К каталогу</a>
+  <a class="button button--secondary" href="/">В каталог</a>
 </div>
 {% endblock %}

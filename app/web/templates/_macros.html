@@ -1,15 +1,26 @@
-{% macro score(value, scale=100, label=None) -%}
-  <span class="score score--{{ score_level(value, scale) }}{% if scale == 10 %} score--user{% endif %}"
-        {% if label %}title="{{ label }}"{% endif %}>
-    {%- if value is none %}—{% elif scale == 10 %}{{ '%.1f' | format(value) }}{% else %}{{ value }}{% endif -%}
+{# Шкала: число и под ним полоска. <meter> доступен скринридерам, ширину заполнения задаёт
+   браузер по value, поэтому инлайновый style не нужен. Без оценки — «—» и пустая полоска #}
+{% macro score(value, scale=100, label=None, size="", caption=None) -%}
+  {% set name = label or ("Оценка игроков" if scale == 10 else "Metascore") %}
+  <span class="score score--{{ score_level(value, scale) }}{% if size %} score--{{ size }}{% endif %}" title="{{ name }}">
+    {%- if caption %}<span class="score__caption">{{ caption }}</span>{% endif -%}
+    <span class="score__value">
+      {%- if value is none %}—{% elif scale == 10 %}{{ '%.1f' | format(value) }}{% else %}{{ value }}{% endif -%}
+    </span>
+    {%- if value is none -%}
+      <span class="score__bar" role="img" aria-label="{{ name }}: нет оценки"></span>
+    {%- else -%}
+      <meter class="score__bar" min="0" max="{{ scale }}" low="{{ scale * 0.5 }}" high="{{ scale * 0.75 }}"
+             optimum="{{ scale }}" value="{{ value }}" aria-label="{{ name }}">{{ value }} из {{ scale }}</meter>
+    {%- endif -%}
   </span>
 {%- endmacro %}
 
 {% macro cover(game, size="") -%}
   {% set src = game.cover_url | safe_url("image") %}
   {% if src %}
-    <img class="cover {{ size }}" src="{{ src }}" alt="" loading="lazy" referrerpolicy="no-referrer">
+    <img class="cover {{ size }}" src="{{ src }}" alt="Обложка {{ game.title }}" loading="lazy" referrerpolicy="no-referrer">
   {% else %}
-    <div class="cover cover--empty {{ size }}">{{ game.title[:1] }}</div>
+    <div class="cover cover--empty {{ size }}" aria-hidden="true">{{ game.title[:1] }}</div>
   {% endif %}
 {%- endmacro %}

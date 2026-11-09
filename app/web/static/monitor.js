@@ -18,13 +18,13 @@
   source.addEventListener("update", (event) => {
     monitor.innerHTML = event.data;
     live.classList.remove("live--off");
-    live.textContent = "● онлайн";
+    live.textContent = "онлайн";
     syncButton();
   });
   const sessionExpired = () => {
     source.close();
     live.classList.add("live--off");
-    live.textContent = "● сессия завершена";
+    live.textContent = "сессия завершена";
     button.disabled = true;
     message.textContent = "Сессия истекла или отозвана, ";
     const link = document.createElement("a");
@@ -39,7 +39,7 @@
       return;
     }
     live.classList.add("live--off");
-    live.textContent = "● переподключение";
+    live.textContent = "переподключение";
   });
 
   const post = (url) => fetch(url, { method: "POST", headers: { "X-CSRF-Token": csrfToken } });

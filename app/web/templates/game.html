@@ -6,38 +6,48 @@
 {% block content %}
 <a class="back" href="/">← Все игры</a>
 
+{% set metascores = platforms | selectattr("metascore", "ne", none) | map(attribute="metascore") | list %}
+{% set userscores = platforms | selectattr("userscore", "ne", none) | map(attribute="userscore") | list %}
 <article class="game">
-  <div class="game__head">
-    {{ cover(game, "cover--large") }}
+  <header class="panel game__head">
+    {{ cover(game, "cover--large cover--cut") }}
     <div class="game__info">
       <h1>{{ game.title }}</h1>
-      <dl class="facts">
-        <dt>Релиз</dt><dd>{{ game.release_date | ru_date }}</dd>
-        {% if game.developer %}<dt>Разработчик</dt><dd>{{ game.developer }}</dd>{% endif %}
-        {% if game.genres %}<dt>Жанр</dt><dd>{{ game.genres | join(", ") }}</dd>{% endif %}
-      </dl>
-
-      <table class="platforms">
-        <thead><tr><th>Платформа</th><th>Metascore</th><th>Игроки</th></tr></thead>
-        <tbody>
-          {% for p in platforms %}
-            <tr>
-              <td>{{ p.platform_name }}</td>
-              <td>{{ score(p.metascore) }}</td>
-              <td>{{ score(p.userscore, 10) }}</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      <a class="source" href="https://www.metacritic.com/game/{{ game.slug }}/" target="_blank" rel="noopener">
-        Страница на Metacritic ↗
-      </a>
+      <p class="game__meta">
+        {% if game.developer %}{{ game.developer }} · {% endif %}{{ game.release_date | ru_date }}
+      </p>
+      {% if game.genres %}
+        <ul class="chips" aria-label="Жанры">{% for g in game.genres %}<li class="chip">{{ g }}</li>{% endfor %}</ul>
+      {% endif %}
+      <div class="scores">
+        {{ score(metascores | max if metascores else none, 100, "Metascore, лучшая платформа", "lg", "Критики") }}
+        {{ score(userscores | max if userscores else none, 10, "Оценка игроков, лучшая платформа", "lg", "Игроки") }}
+      </div>
     </div>
-  </div>
+  </header>
+
+  <section class="panel">
+    <div class="panel__head">
+      <h2 class="panel__title">Платформы</h2>
+      <a class="panel__meta" href="https://www.metacritic.com/game/{{ game.slug }}/" target="_blank" rel="noopener">Metacritic ↗</a>
+    </div>
+    <table class="rows platforms">
+      <thead><tr><th>Платформа</th><th>Критики</th><th>Игроки</th></tr></thead>
+      <tbody>
+        {% for p in platforms %}
+          <tr>
+            <td>{{ p.platform_name }}</td>
+            <td>{{ score(p.metascore) }}</td>
+            <td>{{ score(p.userscore, 10) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
 
   {% if game.description %}
-  <section>
-    <h2>Описание</h2>
+  <section class="panel">
+    <div class="panel__head"><h2 class="panel__title">Описание</h2></div>
     {% if game.description_ru %}
       <p class="description">{{ game.description_ru }}</p>
       <details class="original">
@@ -50,10 +60,35 @@
   </section>
   {% endif %}
 
+  <section aria-labelledby="opinions-title">
+    <h2 id="opinions-title" class="panel__title opinions__title">Что говорят</h2>
+    {% if summaries %}
+      <div class="opinions">
+        {% for source, label in [("critic", "Критики"), ("user", "Игроки")] %}
+          {% set s = summaries.get(source) %}
+          <div class="panel opinion">
+            <div class="panel__head">
+              <h3 class="panel__title">{{ label }}</h3>
+              {% if s %}<span class="panel__meta">{{ s.reviews_count }} {{ s.reviews_count | plural("отзыв", "отзыва", "отзывов") }}</span>{% endif %}
+            </div>
+            {% if s %}
+              {% if s.likes %}<ul class="pros" aria-label="Плюсы">{% for x in s.likes %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
+              {% if s.dislikes %}<ul class="cons" aria-label="Минусы">{% for x in s.dislikes %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
+            {% else %}
+              <p class="muted">Пока мало отзывов для резюме</p>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="panel muted">Отзывов пока нет или резюме ещё не готово</p>
+    {% endif %}
+  </section>
+
   {% set video = game.video_url | safe_url("video") %}
   {% if video %}
-  <section>
-    <h2>Видео</h2>
+  <section class="panel">
+    <div class="panel__head"><h2 class="panel__title">Видео</h2></div>
     {% if video.endswith(".html") %}
       <div class="video"><iframe src="{{ video }}" title="Видео {{ game.title }}"
            sandbox="allow-scripts allow-same-origin allow-presentation"
@@ -65,35 +100,15 @@
   </section>
   {% endif %}
 
-  <section>
-    <h2>Что говорят</h2>
-    {% if summaries %}
-      <div class="opinions">
-        {% for source, label in [("critic", "Критики"), ("user", "Игроки")] %}
-          {% set s = summaries.get(source) %}
-          <div class="opinion">
-            <h3>{{ label }}{% if s %} <small>по {{ s.reviews_count }} отзывам</small>{% endif %}</h3>
-            {% if s %}
-              {% if s.likes %}<ul class="pros">{% for x in s.likes %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
-              {% if s.dislikes %}<ul class="cons">{% for x in s.dislikes %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
-            {% else %}
-              <p class="muted">Пока мало отзывов для резюме</p>
-            {% endif %}
-          </div>
-        {% endfor %}
-      </div>
-    {% else %}
-      <p class="muted">Отзывов пока нет или резюме ещё не готово</p>
-    {% endif %}
-  </section>
-
   {% if game.letsplay and game.letsplay.status == "done" and game.letsplay.conclusion %}
   {% set lp = game.letsplay %}
-  {% set verdicts = {"positive": ("success", "нравится"), "mixed": ("warn", "двоякое"), "negative": ("failed", "не нравится")} %}
-  <section class="letsplay">
-    <h2>Мнение летсплейщика
-      {% if lp.verdict in verdicts %}<span class="badge badge--{{ verdicts[lp.verdict][0] }}">{{ verdicts[lp.verdict][1] }}</span>{% endif %}
-    </h2>
+  {% set verdicts = {"positive": ("good", "нравится"), "mixed": ("mixed", "двоякое"), "negative": ("bad", "не нравится")} %}
+  {% set verdict = verdicts.get(lp.verdict) %}
+  <section class="panel letsplay{% if verdict %} panel--{{ verdict[0] }}{% endif %}">
+    <div class="panel__head">
+      <h2 class="panel__title">Мнение летсплейщика</h2>
+      {% if verdict %}<span class="chip chip--{{ verdict[0] }}">{{ verdict[1] }}</span>{% endif %}
+    </div>
     <p class="description">{{ lp.conclusion }}</p>
     {% set letsplay_url = lp.video_url | safe_url("youtube") %}
     <p class="muted small">
@@ -107,11 +122,11 @@
   {% endif %}
 
   {% if similar %}
-  <section>
-    <h2>Похожие игры</h2>
+  <section class="panel">
+    <div class="panel__head"><h2 class="panel__title">Похожие игры</h2></div>
     <ul class="similar">
       {% for other in similar %}
-        <li><a href="/games/{{ other.slug }}">{{ cover(other, "cover--small") }}<span>{{ other.title }}</span></a></li>
+        <li><a href="/games/{{ other.slug }}">{{ cover(other, "cover--cut") }}<span>{{ other.title }}</span></a></li>
       {% endfor %}
     </ul>
   </section>

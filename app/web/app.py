@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import mimetypes
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from urllib.parse import quote
@@ -27,6 +28,9 @@ from app.web.middleware.request_id import RequestIdMiddleware
 from app.web.middleware.security_headers import SecurityHeadersMiddleware
 from app.web.routes import admin, auth, legacy, public
 from app.web.templating import WEB_DIR, build_templates, templates_of
+
+# Без этого Windows и образы без /etc/mime.types отдают шрифт как text/plain
+mimetypes.add_type("font/woff2", ".woff2")
 
 HTML_ERRORS = {
     403: ("Нет доступа", "Эта страница доступна только администраторам"),
@@ -82,7 +86,7 @@ async def http_error(request: Request, exc: StarletteHTTPException) -> Response:
         return templates_of(request).TemplateResponse(
             request,
             "error.html",
-            {"title": title, "message": message},
+            {"title": title, "message": message, "code": exc.status_code},
             status_code=exc.status_code,
             headers=exc.headers,
         )

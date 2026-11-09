@@ -189,7 +189,8 @@ async def test_nav_depends_on_role(make_client) -> None:
     assert 'href="/login"' in anon
     assert 'name="csrf-token"' not in anon
     assert 'href="/monitor"' in page
-    assert 'href="/metrics"' in page
+    # Метрики открываются напрямую по адресу, в меню их нет даже у админа
+    assert 'href="/metrics"' not in page
     assert f'<meta name="csrf-token" content="{csrf}">' in page
     assert f'"X-CSRF-Token": "{csrf}"' in page
 

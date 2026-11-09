@@ -4,13 +4,16 @@
 
 {% block content %}
 <div class="login">
-  <h1>Код входа</h1>
-  <p class="muted">Введите 6 цифр из приложения-аутентификатора или один из резервных кодов вида abcd-efgh-ijkl</p>
-  {% if error %}<p class="login__error" role="alert">{{ error }}</p>{% endif %}
-  <form method="post" action="/login/code" class="login__form">
-    <label>Код <input name="code" autocomplete="one-time-code" maxlength="40" required autofocus autocapitalize="off" spellcheck="false"></label>
-    <button class="button" type="submit">Войти</button>
-  </form>
-  <p class="muted small"><a href="/login">Войти заново</a></p>
+  <section class="panel">
+    <p class="login__step">шаг 2 из 2</p>
+    <h1>Код входа</h1>
+    <p class="muted">Введите 6 цифр из приложения-аутентификатора или один из резервных кодов вида abcd-efgh-ijkl</p>
+    {% if error %}<p class="alert login__error" role="alert">{{ error }}</p>{% endif %}
+    <form method="post" action="/login/code" class="form login__form">
+      <label>Код <input class="field field--code" name="code" autocomplete="one-time-code" maxlength="40" required autofocus autocapitalize="off" spellcheck="false"></label>
+      <button class="button" type="submit">Войти</button>
+    </form>
+    <p class="muted small"><a href="/login">Войти заново</a></p>
+  </section>
 </div>
 {% endblock %}

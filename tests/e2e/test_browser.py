@@ -66,7 +66,8 @@ async def test_admin_login_and_monitor(page, session_factory) -> None:
     await page.wait_for_url("**/monitor")
     # Снимок приходит через SSE и заменяет содержимое блока монитора
     await page.locator("#live:not(.live--off)").wait_for()
-    assert "Последние проходы" in await page.inner_text("#monitor")
+    # Заголовки панелей набраны заглавными через CSS, inner_text отдаёт их так же
+    assert "последние проходы" in (await page.inner_text("#monitor")).lower()
 
     # Живого воркера нет: кнопка запуска отвечает понятной ошибкой, а не молчит
     await page.click("#run-now")

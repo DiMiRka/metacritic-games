@@ -28,6 +28,15 @@ def score_level(value: float | None, scale: int = 100) -> str:
     return "good" if value >= 75 else "mixed" if value >= 50 else "bad"
 
 
+def plural(n: int, one: str, few: str, many: str) -> str:
+    """Форма слова после числа: 1 отзыв, 3 отзыва, 11 отзывов"""
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
 def duration(seconds: float | None) -> str:
     if seconds is None:
         return "—"
@@ -63,6 +72,7 @@ def build_templates(settings: Settings) -> Jinja2Templates:
     templates.env.filters["safe_url"] = safe_url_filter
     templates.env.filters["local_time"] = local_time
     templates.env.filters["duration"] = duration
+    templates.env.filters["plural"] = plural
     templates.env.globals["score_level"] = score_level
     return templates
 

@@ -4,14 +4,17 @@
 
 {% block content %}
 <div class="login">
-  <h1>Вход</h1>
-  <p class="muted">Служебная часть сайта: мониторинг и запуск обхода</p>
-  {% if error %}<p class="login__error" role="alert">{{ error }}</p>{% endif %}
-  <form method="post" action="/login" class="login__form">
-    <input type="hidden" name="next" value="{{ next }}">
-    <label>Логин <input name="login" autocomplete="username" required maxlength="100" autofocus></label>
-    <label>Пароль <input name="password" type="password" autocomplete="current-password" required></label>
-    <button class="button" type="submit">Войти</button>
-  </form>
+  <section class="panel">
+    <p class="login__step">шаг 1 из 2</p>
+    <h1>Вход</h1>
+    <p class="muted">Служебная часть сайта: мониторинг и запуск обхода</p>
+    {% if error %}<p class="alert login__error" role="alert">{{ error }}</p>{% endif %}
+    <form method="post" action="/login" class="form login__form">
+      <input type="hidden" name="next" value="{{ next }}">
+      <label>Логин <input class="field" name="login" autocomplete="username" required maxlength="100" autofocus></label>
+      <label>Пароль <input class="field" name="password" type="password" autocomplete="current-password" required></label>
+      <button class="button" type="submit">Войти</button>
+    </form>
+  </section>
 </div>
 {% endblock %}

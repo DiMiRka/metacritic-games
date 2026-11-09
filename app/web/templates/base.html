@@ -13,10 +13,10 @@
 <body{% if csrf_token %} hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'{% endif %}>
   <header class="topbar">
     <div class="wrap topbar__inner">
-      <a class="logo" href="/">Игры Metacritic</a>
+      <a class="logo" href="/" aria-label="Игры Metacritic, каталог">MC<span>//</span>GAMES</a>
       <nav class="topnav">
         <a href="/">Каталог</a>
-        {% if auth and auth.is_admin %}<a href="/monitor">Мониторинг</a><a href="/metrics">Метрики</a>{% endif %}
+        {% if auth and auth.is_admin %}<a href="/monitor">Мониторинг</a>{% endif %}
         {% if show_docs %}<a href="/docs">API</a>{% endif %}
         {% if auth %}
           <form class="logout" method="post" action="/logout">

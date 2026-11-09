@@ -2,55 +2,92 @@
 {% set kinds = {"collect": "сбор", "scrape_game": "игры", "summarize": "резюме", "embed": "эмбеддинги", "letsplay": "летсплеи", "letsplay_conclude": "заключения", "translate": "переводы"} %}
 {% set stages = {"scrape": "игра", "summarize_critic": "резюме критиков", "summarize_user": "резюме игроков", "embed": "эмбеддинг"} %}
 {% if m.collect_active %}<div data-running hidden></div>{% endif %}
-<section class="stats">
-  <div class="stat"><span class="stat__value">{{ c.games_total }}</span><span class="stat__label">игр в базе</span></div>
-  <div class="stat"><span class="stat__value">{{ c.processed_today }}</span><span class="stat__label">обработано сегодня</span></div>
-  <div class="stat"><span class="stat__value">{{ c.runs_today }}</span><span class="stat__label">проходов сегодня</span></div>
-  <div class="stat{% if c.errors_today %} stat--bad{% endif %}"><span class="stat__value">{{ c.errors_today }}</span><span class="stat__label">ошибок сегодня</span></div>
-  <div class="stat"><span class="stat__value">{{ c.summaries_total }}</span><span class="stat__label">резюме отзывов</span></div>
-  <div class="stat"><span class="stat__value">{{ "{:,}".format(c.llm_input_tokens_today + c.llm_output_tokens_today).replace(",", " ") }}</span><span class="stat__label">токенов LLM сегодня{% if c.llm_cost_today is not none %}, ≈ ${{ "%.4f"|format(c.llm_cost_today) }}{% endif %}</span></div>
-  <div class="stat"><span class="stat__value">{{ c.embeddings_total }}</span><span class="stat__label">эмбеддингов</span></div>
+
+<section class="panel">
+  <div class="panel__head">
+    <h2 class="panel__title">Текущий проход</h2>
+    <span class="panel__meta">
+      Курсор на сегодня:
+      {% if c.phase == "browse" %}browse, страница {{ c.next_page }}{% elif c.phase %}New Releases{% else %}ещё не создан{% endif %}
+    </span>
+  </div>
+  {% if m.current_run %}
+    {% set r = m.current_run %}
+    {% set scrape = m.queue | selectattr("kind", "eq", "scrape_game") | first %}
+    {% set left = (scrape.queued + scrape.running) if scrape else 0 %}
+    {% set total = r.processed + left %}
+    <p><strong>#{{ r.id }}</strong> ({% if r.trigger == "manual" %}вручную{% if r.requested_by %}, {{ r.requested_by }}{% endif %}{% else %}по расписанию{% endif %}), идёт {{ r.duration_seconds | duration }}</p>
+    <div class="run-progress">
+      <div class="run-progress__label"><span>обработано игр</span><span>{{ r.processed }} из {{ total }}</span></div>
+      <progress class="progress" max="{{ total or 1 }}" value="{{ r.processed }}" aria-label="Прогресс прохода">{{ r.processed }} из {{ total }}</progress>
+    </div>
+    <p class="muted small">новых {{ r.created }}, обновлено {{ r.updated }}, без изменений {{ r.unchanged }}, упавших этапов {{ r.errors_count }}</p>
+  {% else %}
+    <p class="muted">{% if m.collect_active %}Сбор кандидатов в очереди{% else %}Сейчас проход не идёт{% endif %}</p>
+  {% endif %}
+</section>
+
+<section class="stats" aria-label="Счётчики">
+  <div class="panel stat"><span class="stat__value">{{ c.games_total }}</span><span class="stat__label">игр в базе</span></div>
+  <div class="panel stat"><span class="stat__value">{{ c.processed_today }}</span><span class="stat__label">обработано сегодня</span></div>
+  <div class="panel stat"><span class="stat__value">{{ c.runs_today }}</span><span class="stat__label">проходов сегодня</span></div>
+  <div class="panel stat{% if c.errors_today %} panel--bad stat--bad{% endif %}"><span class="stat__value">{{ c.errors_today }}</span><span class="stat__label">ошибок сегодня</span></div>
+  <div class="panel stat"><span class="stat__value">{{ c.summaries_total }}</span><span class="stat__label">резюме отзывов</span></div>
+  <div class="panel stat"><span class="stat__value">{{ "{:,}".format(c.llm_input_tokens_today + c.llm_output_tokens_today).replace(",", " ") }}</span><span class="stat__label">токенов LLM сегодня{% if c.llm_cost_today is not none %}, ≈ ${{ "%.4f"|format(c.llm_cost_today) }}{% endif %}</span></div>
+  <div class="panel stat"><span class="stat__value">{{ c.embeddings_total }}</span><span class="stat__label">эмбеддингов</span></div>
 </section>
 
 <div class="monitor-grid">
   <section class="panel">
-    <h2>Воркеры</h2>
-    {% for w in m.workers %}
-      <div class="worker">
-        <span class="dot dot--{{ 'busy' if w.alive and w.status == 'running' else 'ok' if w.alive else 'off' }}"></span>
-        <div>
-          <strong>{{ w.worker }}</strong> —
-          {% if not w.alive %}не отвечает{% elif w.status == "running" %}работает{% else %}ждёт{% endif %}
-          <div class="muted small">
-            {% if w.alive and w.current_task %}{{ w.current_task }} · {% endif %}сигнал {{ w.updated_at | local_time }}
+    <div class="panel__head">
+      <h2 class="panel__title">Воркеры</h2>
+      <span class="panel__meta">{{ m.workers | selectattr("alive") | list | length }} из {{ m.workers | length }} на связи</span>
+    </div>
+    {% if m.workers %}
+    <ul class="status-list">
+      {% for w in m.workers %}
+        <li>
+          <span class="dot dot--{{ 'busy' if w.alive and w.status == 'running' else 'ok' if w.alive else 'off' }}" aria-hidden="true"></span>
+          <div>
+            <strong>{{ w.worker }}</strong> —
+            {% if not w.alive %}не отвечает{% elif w.status == "running" %}работает{% else %}ждёт{% endif %}
+            <div class="muted small">
+              {% if w.alive and w.current_task %}{{ w.current_task }} · {% endif %}сигнал {{ w.updated_at | local_time }}
+            </div>
           </div>
-        </div>
-      </div>
+        </li>
+      {% endfor %}
+    </ul>
     {% else %}
       <p class="muted">Воркер ещё ни разу не запускался</p>
-    {% endfor %}
+    {% endif %}
   </section>
 
   <section class="panel">
-    <h2>Текущий проход</h2>
-    {% if m.current_run %}
-      {% set r = m.current_run %}
-      <div>
-        <p><strong>#{{ r.id }}</strong> ({% if r.trigger == "manual" %}вручную{% if r.requested_by %}, {{ r.requested_by }}{% endif %}{% else %}по расписанию{% endif %}), идёт {{ r.duration_seconds | duration }}</p>
-        <p class="muted small">игр {{ r.processed }}: новых {{ r.created }}, обновлено {{ r.updated }}, без изменений {{ r.unchanged }}, упавших этапов {{ r.errors_count }}</p>
-      </div>
+    <div class="panel__head"><h2 class="panel__title">Автоматы</h2></div>
+    {% if m.breakers %}
+    <ul class="status-list">
+      {% for b in m.breakers %}
+        <li>
+          <span class="dot dot--{{ 'ok' if b.state == 'closed' else 'warn' }}" aria-hidden="true"></span>
+          <div>
+            <strong>{{ b.name }}</strong> —
+            {% if b.state == "closed" %}закрыт
+            {% elif b.state == "open" %}открыт до {{ b.opened_until | local_time }}, задачи отложены
+            {% else %}проверка, пробная задача в работе{% endif %}
+            {% if b.failures %}<div class="muted small">сбоев подряд: {{ b.failures }}</div>{% endif %}
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
     {% else %}
-      <p class="muted">{% if m.collect_active %}Сбор кандидатов в очереди{% else %}Сейчас проход не идёт{% endif %}</p>
+      <p class="muted">Сбоев внешних сервисов не было</p>
     {% endif %}
-    <p class="muted small">
-      Курсор на сегодня:
-      {% if c.phase == "browse" %}browse, страница {{ c.next_page }}{% elif c.phase %}New Releases{% else %}ещё не создан{% endif %}
-    </p>
   </section>
 </div>
 
 <section class="panel">
-  <h2>Последние проходы</h2>
+  <div class="panel__head"><h2 class="panel__title">Последние проходы</h2></div>
   {% if m.runs %}
   <div class="table-scroll">
     <table class="runs">
@@ -82,7 +119,7 @@
 
 <div class="monitor-grid">
   <section class="panel">
-    <h2>Очередь</h2>
+    <div class="panel__head"><h2 class="panel__title">Очередь</h2></div>
     <div class="table-scroll">
       <table class="runs">
         <thead><tr><th>Задачи</th><th>Ждут</th><th>В работе</th><th>Dead</th></tr></thead>
@@ -98,15 +135,6 @@
         </tbody>
       </table>
     </div>
-    {% for b in m.breakers %}
-      <p class="small">
-        Автомат {{ b.name }}:
-        {% if b.state == "closed" %}<span class="badge badge--success">закрыт</span>
-        {% elif b.state == "open" %}<span class="badge badge--failed">открыт</span> до {{ b.opened_until | local_time }}, задачи отложены
-        {% else %}<span class="badge badge--warn">проверка</span> пробная задача в работе{% endif %}
-        {% if b.failures %}<span class="muted">сбоев подряд: {{ b.failures }}</span>{% endif %}
-      </p>
-    {% endfor %}
     {% if m.expired %}
       <p class="small"><span class="badge badge--warn">аренда истекла</span>
         {% for j in m.expired %}{{ kinds[j.kind] }} #{{ j.id }} ({{ j.locked_by }}){% if not loop.last %}, {% endif %}{% endfor %}
@@ -114,8 +142,11 @@
     {% endif %}
   </section>
 
-  <section class="panel">
-    <h2>Dead-задачи</h2>
+  <section class="panel{% if m.dead %} panel--bad{% endif %}">
+    <div class="panel__head">
+      <h2 class="panel__title">Dead-задачи</h2>
+      {% if m.dead %}<span class="panel__meta">{{ m.dead | length }}</span>{% endif %}
+    </div>
     {% for j in m.dead %}
       <div class="error-row">
         <span class="muted small">{{ kinds[j.kind] }} #{{ j.id }} · {{ j.finished_at | local_time }} · попыток {{ j.attempts }}</span>
@@ -129,8 +160,8 @@
   </section>
 </div>
 
-<section class="panel">
-  <h2>Неудачные входы за сутки</h2>
+<section class="panel{% if m.failed_logins %} panel--mixed{% endif %}">
+  <div class="panel__head"><h2 class="panel__title">Неудачные входы за сутки</h2></div>
   {% for f in m.failed_logins %}
     <div class="error-row">
       <span class="muted small">последняя {{ f.last_at | local_time }} · адресов: {{ f.ips }}</span>
@@ -142,8 +173,8 @@
   {% endfor %}
 </section>
 
-<section class="panel">
-  <h2>Последние ошибки этапов</h2>
+<section class="panel{% if m.errors %} panel--bad{% endif %}">
+  <div class="panel__head"><h2 class="panel__title">Последние ошибки</h2></div>
   {% for e in m.errors %}
     <div class="error-row">
       <span class="muted small">#{{ e.run_id }} · {{ e.created_at | local_time }} · {{ stages[e.stage] }} · {{ "будет повтор" if e.status == "retrying" else "сдались" }}</span>
