@@ -15,6 +15,11 @@ def session_cookie(settings: Settings) -> str:
     return "__Host-session" if settings.is_prod else "session"
 
 
+def login_code_cookie(settings: Settings) -> str:
+    # Ожидание кода второго фактора: тот же префикс __Host-, что у сессии
+    return "__Host-login-code" if settings.is_prod else "login-code"
+
+
 def app_settings(request: Request) -> Settings:
     return request.app.state.settings
 

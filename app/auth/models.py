@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     func,
@@ -97,3 +98,22 @@ class TotpRecoveryCode(Base):
     __table_args__ = (
         Index("uq_totp_recovery_codes_user_id_lookup", "user_id", "lookup", unique=True),
     )
+
+
+class LoginChallenge(Base):
+    """Пароль администратора принят, ждём код второго фактора. Сессии ещё нет.
+    В базе только sha256 от токена из cookie, у пользователя не больше одного ожидания
+    """
+
+    __tablename__ = "login_challenges"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    next_url: Mapped[str] = mapped_column(Text, default="/")
+    ip: Mapped[str | None] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    created_at: Mapped[datetime] = created_column()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (Index("ix_login_challenges_expires_at", "expires_at"),)

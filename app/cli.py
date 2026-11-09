@@ -78,7 +78,7 @@ async def run(args: argparse.Namespace) -> None:
             print(
                 f"Удалено: задач {r.jobs}, проходов {r.runs}, курсоров {r.crawl_states}, "
                 f"сырых ответов {r.raw_pages}, сессий {r.sessions}, "
-                f"попыток входа {r.login_attempts}"
+                f"попыток входа {r.login_attempts}, ожиданий кода {r.login_challenges}"
             )
         elif args.command == "db-roles":
             from app.core.db_roles import setup_roles

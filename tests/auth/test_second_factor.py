@@ -17,8 +17,11 @@ OLD, NEW = "o" * 64, "n" * 64
 
 
 async def post_login(client, code: str, login: str = "admin"):
-    data = {"login": login, "password": PASSWORD, "next": "/monitor", "code": code}
-    return await client.post("/login", data=data)
+    """Оба шага: пароль, затем код на /login/code"""
+    data = {"login": login, "password": PASSWORD, "next": "/monitor"}
+    first = await client.post("/login", data=data)
+    assert first.headers["location"] == "/login/code"
+    return await client.post("/login/code", data={"code": code})
 
 
 async def with_totp(session_factory) -> tuple[int, str]:

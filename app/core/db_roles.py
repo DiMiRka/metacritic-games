@@ -46,7 +46,13 @@ WEB_READ_TABLES = (
     "jobs",
     "backup_runs",
 )
-WEB_WRITE_TABLES = ("users", "sessions", "login_attempts", "totp_recovery_codes")
+WEB_WRITE_TABLES = (
+    "users",
+    "sessions",
+    "login_attempts",
+    "totp_recovery_codes",
+    "login_challenges",
+)
 DML = "SELECT, INSERT, UPDATE, DELETE"
 
 # Должны совпадать с crawler.stages и jobs.queue, это проверяет тест
@@ -111,14 +117,19 @@ BEGIN
     RETURN changed > 0;
 END
 $fn$""",
+        "DROP FUNCTION IF EXISTS purge_auth_records()",
         f"""
-CREATE OR REPLACE FUNCTION purge_auth_records(OUT sessions integer, OUT login_attempts integer)
+CREATE OR REPLACE FUNCTION purge_auth_records(
+    OUT sessions integer, OUT login_attempts integer, OUT login_challenges integer
+)
 {header} AS $fn$
 BEGIN
     DELETE FROM sessions s WHERE s.expires_at < now();
     GET DIAGNOSTICS sessions = ROW_COUNT;
     DELETE FROM login_attempts a WHERE a.attempted_at < now() - make_interval(mins => {keep});
     GET DIAGNOSTICS login_attempts = ROW_COUNT;
+    DELETE FROM login_challenges c WHERE c.expires_at < now();
+    GET DIAGNOSTICS login_challenges = ROW_COUNT;
 END
 $fn$""",
         *(

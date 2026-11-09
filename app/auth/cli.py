@@ -71,7 +71,13 @@ async def enable_totp(login: str) -> None:
     """Новый секрет TOTP; включается, только когда приложение выдало верный код"""
     login = normalize_login(login)
     async with open_session() as db:
-        await _user(db, login)
+        user = await _user(db, login)
+        role = user.role
+    if role != UserRole.ADMIN:
+        raise SystemExit(
+            f"Второй фактор нужен только администраторам, у {login} роль {role}: "
+            "при входе код у него не спрашивается"
+        )
     secret = totp.new_secret()
     print("Добавьте ключ в приложение-аутентификатор (Google Authenticator, Aegis, 1Password)")
     print(f"Ключ: {secret}")

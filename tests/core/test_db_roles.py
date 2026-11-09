@@ -170,7 +170,7 @@ async def test_purge_auth_records(conn) -> None:
 
     purged = (await conn.execute(text("SELECT * FROM purge_auth_records()"))).one()
 
-    assert tuple(purged) == (1, 1)
+    assert tuple(purged) == (1, 1, 0)
 
 
 def test_function_constants_match_code() -> None:

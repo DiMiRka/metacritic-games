@@ -28,6 +28,7 @@ class CleanupReport:
     raw_pages: int = 0
     sessions: int = 0
     login_attempts: int = 0
+    login_challenges: int = 0
 
 
 async def _delete_chunked(
@@ -94,7 +95,7 @@ async def cleanup(
     # Прав на sessions и login_attempts у воркера нет, только на эту функцию
     async with session_factory() as session, session.begin():
         purged = (await session.execute(select(text("* FROM purge_auth_records()")))).one()
-    report.sessions, report.login_attempts = purged
+    report.sessions, report.login_attempts, report.login_challenges = purged
 
     if raw_days > 0:
         report.raw_pages = await _delete_chunked(

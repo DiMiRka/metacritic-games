@@ -79,4 +79,4 @@ async def test_wrong_password_shows_error(page, session_factory) -> None:
     await page.fill("input[name=login]", "admin")
     await page.fill("input[name=password]", "wrong password!!")
     await page.click("button[type=submit]")
-    await page.locator("[role=alert]", has_text="Неверный логин, пароль или код").wait_for()
+    await page.locator("[role=alert]", has_text="Неверный логин или пароль").wait_for()

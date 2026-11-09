@@ -15,7 +15,14 @@ from sqlalchemy import delete, distinct, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth import crypto, totp
-from app.auth.models import LoginAttempt, TotpRecoveryCode, User, UserRole, UserSession
+from app.auth.models import (
+    LoginAttempt,
+    LoginChallenge,
+    TotpRecoveryCode,
+    User,
+    UserRole,
+    UserSession,
+)
 from app.core.clock import now_tz
 from app.core.config import Settings
 
@@ -193,8 +200,11 @@ async def failed_login_series(db: AsyncSession, limit: int = 10) -> list[FailedL
 
 
 class SecondFactor(StrEnum):
+    # Входить сразу
     OK = "ok"
-    INVALID = "invalid"
+    # Нужен второй шаг: код TOTP или резервный код
+    CODE_REQUIRED = "code_required"
+    # Администратору без TOTP вход закрыт, пока второй фактор обязателен
     SETUP_REQUIRED = "setup_required"
 
 
@@ -315,27 +325,27 @@ def _looks_like_totp(code: str) -> bool:
     return len(digits) == totp.DIGITS and digits.isdigit()
 
 
-async def check_second_factor(
-    db: AsyncSession, user: User, code: str, *, config: Settings
-) -> SecondFactor:
-    """Код TOTP или резервный код, если второй фактор включён. Админу без TOTP вход закрыт,
-    когда второй фактор обязателен
-    """
-    if not user.totp_secret:
-        if user.role == UserRole.ADMIN and config.totp_required_for_admins:
-            return SecondFactor.SETUP_REQUIRED
+def second_factor_step(user: User, *, config: Settings) -> SecondFactor:
+    """Что нужно после верного пароля. Код спрашивается только у администратора с TOTP:
+    у viewer второго фактора нет, даже если секрет в базе вдруг остался"""
+    if user.role != UserRole.ADMIN:
         return SecondFactor.OK
-    if code and not _looks_like_totp(code):
-        ok = await use_recovery_code(db, user, code)
-        return SecondFactor.OK if ok else SecondFactor.INVALID
+    if user.totp_secret:
+        return SecondFactor.CODE_REQUIRED
+    if config.totp_required_for_admins:
+        return SecondFactor.SETUP_REQUIRED
+    return SecondFactor.OK
+
+
+async def verify_totp(db: AsyncSession, user: User, code: str, *, config: Settings) -> bool:
     try:
         secret = open_totp_secret(user, config=config)
     except crypto.SecretDecryptError as exc:
         logger.error("секрет TOTP {} не расшифровать: {}", user.login, exc)
-        return SecondFactor.INVALID
+        return False
     step = totp.match_step(secret, code, last_step=user.totp_last_step)
     if step is None:
-        return SecondFactor.INVALID
+        return False
     # Условие в UPDATE: из двух одновременных входов с одним кодом пройдёт только один
     result = await db.execute(
         update(User)
@@ -347,9 +357,59 @@ async def check_second_factor(
         .execution_options(synchronize_session=False)
     )
     if result.rowcount != 1:
-        return SecondFactor.INVALID
+        return False
     user.totp_last_step = step
-    return SecondFactor.OK
+    return True
+
+
+async def verify_second_factor(
+    db: AsyncSession, user: User, code: str, *, config: Settings
+) -> bool:
+    """6 цифр — код TOTP, иначе резервный код"""
+    if not user.totp_secret or not code.strip():
+        return False
+    if _looks_like_totp(code):
+        return await verify_totp(db, user, code, config=config)
+    return await use_recovery_code(db, user, code)
+
+
+async def create_login_challenge(
+    db: AsyncSession, user: User, next_url: str, ip: str | None, *, config: Settings
+) -> str:
+    """Ожидание кода после верного пароля. Прежнее ожидание пользователя удаляется:
+    одновременно действует только одно. Возвращает токен для cookie, в базе только хеш"""
+    await db.execute(delete(LoginChallenge).where(LoginChallenge.user_id == user.id))
+    token = secrets.token_urlsafe(32)
+    db.add(
+        LoginChallenge(
+            user_id=user.id,
+            token_hash=token_hash(token),
+            next_url=safe_next(next_url),
+            ip=(ip or "")[:64] or None,
+            expires_at=func.now() + timedelta(seconds=config.login_code_ttl_seconds),
+        )
+    )
+    await db.flush()
+    return token
+
+
+async def load_login_challenge(db: AsyncSession, token: str | None) -> LoginChallenge | None:
+    """Действующее ожидание по токену из cookie. Строка блокируется до конца транзакции:
+    два одновременных ввода кода не обойдут счётчик попыток"""
+    if not token:
+        return None
+    return await db.scalar(
+        select(LoginChallenge)
+        .where(
+            LoginChallenge.token_hash == token_hash(token),
+            LoginChallenge.expires_at > func.now(),
+        )
+        .with_for_update()
+    )
+
+
+async def delete_login_challenge(db: AsyncSession, challenge: LoginChallenge) -> None:
+    await db.execute(delete(LoginChallenge).where(LoginChallenge.id == challenge.id))
 
 
 async def clear_attempts(db: AsyncSession, ip: str, login: str) -> None:

@@ -76,6 +76,13 @@ async def test_cli_totp_enable_requires_valid_code(monkeypatch, session_factory,
     assert await count(session_factory, UserSession) == 0
 
 
+async def test_cli_totp_only_for_admins(monkeypatch, session_factory) -> None:
+    await create_user(session_factory, "reader", role="viewer")
+    monkeypatch.setattr(users_cli, "open_session", session_factory)
+    with pytest.raises(SystemExit, match="только администраторам"):
+        await users_cli.enable_totp("reader")
+
+
 async def test_cli_rejects_short_or_mismatched_password(monkeypatch, session_factory) -> None:
     with patched_cli(monkeypatch, session_factory, "short", "short"), pytest.raises(SystemExit):
         await users_cli.create_admin("root")

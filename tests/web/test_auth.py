@@ -8,7 +8,7 @@ from app.auth import service as auth_module
 from app.auth.models import LoginAttempt, User, UserSession
 from app.auth.service import csrf_token_for, token_hash
 from app.core.clock import now_tz
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.web.routes.admin import monitor_events
 from tests.conftest import ORIGIN, PASSWORD, SESSION_COOKIE, app, create_user, login_as
 
@@ -61,7 +61,7 @@ async def test_wrong_password_and_unknown_login_look_the_same(
         unknown = await post_login(client, "nobody", "wrong password!!")
 
     assert wrong.status_code == unknown.status_code == 401
-    assert "Неверный логин, пароль или код" in wrong.text
+    assert "Неверный логин или пароль" in wrong.text
     assert wrong.text == unknown.text
     assert len(verified) == 2
     assert verified[1] == auth_module._DUMMY_HASH
@@ -335,25 +335,6 @@ async def enable_totp(session_factory, user_id: int) -> str:
     return secret
 
 
-async def test_totp_required_when_enabled_and_code_single_use(make_client, session_factory) -> None:
-    from app.auth import totp
-
-    user_id = await create_user(session_factory, "admin")
-    secret = await enable_totp(session_factory, user_id)
-    code = totp.code_at(secret, totp.current_step())
-
-    async with make_client() as client:
-        without = await post_login(client, "admin")
-        wrong = await post_login(client, "admin", code="000000" if code != "000000" else "111111")
-        ok = await post_login(client, "admin", code=code)
-    async with make_client(ip="10.3.0.1") as replay:
-        reused = await post_login(replay, "admin", code=code)
-
-    assert (without.status_code, wrong.status_code, ok.status_code) == (401, 401, 303)
-    assert reused.status_code == 401
-    assert "Неверный логин, пароль или код" in without.text
-
-
 async def test_admin_without_totp_blocked_when_required(
     make_client, session_factory, monkeypatch
 ) -> None:
@@ -372,9 +353,19 @@ async def test_admin_without_totp_blocked_when_required(
     assert await count(session_factory, UserSession) == 1
 
 
-def test_totp_required_in_prod_by_default(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "admin_totp_required", None)
+async def test_admin_without_totp_enters_directly_in_prod(
+    make_client, session_factory, monkeypatch
+) -> None:
+    # В prod TOTP тоже можно выключить: без него админ входит по логину и паролю
+    monkeypatch.delenv("ADMIN_TOTP_REQUIRED", raising=False)
     monkeypatch.setattr(settings, "env", "prod")
-    assert settings.totp_required_for_admins
-    monkeypatch.setattr(settings, "env", "dev")
-    assert not settings.totp_required_for_admins
+    monkeypatch.setattr(
+        settings, "admin_totp_required", Settings.model_fields["admin_totp_required"].default
+    )
+    await create_user(session_factory, "admin")
+    async with make_client() as client:
+        response = await client.post(
+            "/login", data={"login": "admin", "password": PASSWORD, "next": "/monitor"}
+        )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/monitor"

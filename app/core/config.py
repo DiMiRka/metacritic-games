@@ -86,8 +86,13 @@ class Settings(BaseSettings):
     login_delay_max_seconds: int = 60
     # На каждой такой по счёту неудаче подряд в журнал пишется предупреждение
     login_alert_threshold: int = 10
-    # Второй фактор TOTP для администраторов, по умолчанию обязателен в prod
-    admin_totp_required: bool | None = None
+    # Второй шаг входа администратора: сколько ждать код и сколько неверных кодов допустить,
+    # потом пароль вводится заново
+    login_code_ttl_seconds: int = 300
+    login_code_max_attempts: int = 5
+    # true: администратор без TOTP не войдёт. По умолчанию TOTP включается и выключается
+    # командами users totp и totp-off, без него админ входит по паролю
+    admin_totp_required: bool = False
 
     rate_limit_catalog_per_minute: int = 120
     rate_limit_api_per_minute: int = 120
@@ -174,7 +179,7 @@ class Settings(BaseSettings):
 
     @property
     def totp_required_for_admins(self) -> bool:
-        return self.is_prod if self.admin_totp_required is None else self.admin_totp_required
+        return self.admin_totp_required
 
     @property
     def tz(self) -> ZoneInfo:
