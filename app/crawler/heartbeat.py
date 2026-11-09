@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -28,14 +28,22 @@ async def beat(
     worker: str,
     status: str | None = None,
     current_task: str | None = None,
+    next_collect_at: datetime | None = None,
 ) -> None:
     """Обновляет heartbeat; без status только продлевает updated_at"""
     stmt = insert(WorkerHeartbeat).values(
-        worker=worker, status=status or "idle", current_task=current_task
+        worker=worker,
+        status=status or "idle",
+        current_task=current_task,
+        next_collect_at=next_collect_at,
     )
     changes = {"updated_at": func.now()}
     if status is not None:
-        changes |= {"status": stmt.excluded.status, "current_task": stmt.excluded.current_task}
+        changes |= {
+            "status": stmt.excluded.status,
+            "current_task": stmt.excluded.current_task,
+            "next_collect_at": stmt.excluded.next_collect_at,
+        }
     async with session_factory() as session, session.begin():
         await session.execute(stmt.on_conflict_do_update(index_elements=["worker"], set_=changes))
 

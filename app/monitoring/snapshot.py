@@ -24,6 +24,7 @@ class WorkerOut(BaseModel):
     worker: str
     status: str
     current_task: str | None
+    next_collect_at: datetime | None
     updated_at: datetime
     alive: bool
 
@@ -207,6 +208,7 @@ async def snapshot(
             worker=h.worker,
             status=h.status,
             current_task=h.current_task,
+            next_collect_at=h.next_collect_at,
             updated_at=h.updated_at,
             alive=h.updated_at >= fresh and h.status != "stopped",
         )

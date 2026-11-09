@@ -106,13 +106,10 @@ class Worker:
         held = self.held()
         if status is None:
             status = "running" if held else "idle"
-        if held:
-            task = ", ".join(held)
-        elif self.next_collect and status != "stopped":
-            task = f"следующий проход в {self.next_collect:%H:%M}"
-        else:
-            task = None
-        await beat(self.session_factory, self.worker_id, status, task)
+        task = ", ".join(held) if held else None
+        # Время отдельным полем: страница покажет его в часовом поясе пользователя
+        next_collect = self.next_collect if status != "stopped" else None
+        await beat(self.session_factory, self.worker_id, status, task, next_collect)
         if settings.worker_health_file:
             await asyncio.to_thread(Path(settings.worker_health_file).touch)
 

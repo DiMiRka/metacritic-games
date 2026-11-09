@@ -1,5 +1,5 @@
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -140,3 +140,17 @@ async def test_heartbeat_touches_health_file(db_engine, session_factory, monkeyp
     worker = make_worker(db_engine, session_factory, "w-health")
     await worker.heartbeat("idle")
     assert health.exists()
+
+
+async def test_heartbeat_stores_next_collect_as_moment(db_engine, session_factory) -> None:
+    worker = make_worker(db_engine, session_factory, "w-next")
+    worker.next_collect = datetime(2026, 11, 9, 6, 30, tzinfo=UTC)
+    await worker.heartbeat("idle")
+    async with session_factory() as session:
+        row = await session.get(WorkerHeartbeat, "w-next")
+    # Время больше не вшито в текст: страница покажет его в поясе пользователя
+    assert (row.current_task, row.next_collect_at) == (None, worker.next_collect)
+
+    await worker.heartbeat("stopped")
+    async with session_factory() as session:
+        assert (await session.get(WorkerHeartbeat, "w-next")).next_collect_at is None

@@ -186,6 +186,7 @@ async def test_monitor_page(client, session_factory) -> None:
     assert page.status_code == 200
     assert "<div data-running hidden>" in page.text
     assert "scrape_game#7" in page.text
+    assert '<time datetime="' in page.text and 'data-format="datetime"' in page.text
     assert f'data-retry="{job_id}"' in page.text
     assert "ScrapeFormatError: формат" in page.text
     assert "RateLimitError: квота" in page.text

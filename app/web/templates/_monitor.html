@@ -52,7 +52,7 @@
             <strong>{{ w.worker }}</strong> —
             {% if not w.alive %}не отвечает{% elif w.status == "running" %}работает{% else %}ждёт{% endif %}
             <div class="muted small">
-              {% if w.alive and w.current_task %}{{ w.current_task }} · {% endif %}сигнал {{ w.updated_at | local_time }}
+              {% if w.alive and w.current_task %}{{ w.current_task }} · {% elif w.alive and w.next_collect_at %}следующий проход в {{ w.next_collect_at | local_time("time") }} · {% endif %}сигнал {{ w.updated_at | local_time }}
             </div>
           </div>
         </li>

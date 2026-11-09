@@ -1,10 +1,11 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 
 from app.catalog.similar import (
     Closeness,
@@ -35,6 +36,9 @@ def score_level(value: float | None, scale: int = 100) -> str:
     value = value * 100 / scale
     return "good" if value >= 75 else "mixed" if value >= 50 else "bad"
 
+
+# Форматы времени: тот же вид собирает static/time.js в поясе браузера
+TIME_FORMATS = {"datetime": "%d.%m %H:%M:%S", "time": "%H:%M"}
 
 SIMILAR_LINE_LIMIT = 60
 SIMILAR_MAX_PARTS = 3
@@ -116,8 +120,16 @@ def auth_context(request: Request) -> dict[str, Any]:
 def build_templates(settings: Settings) -> Jinja2Templates:
     tz = ZoneInfo(settings.timezone)
 
-    def local_time(value: datetime | None) -> str:
-        return value.astimezone(tz).strftime("%d.%m %H:%M:%S") if value else "—"
+    def local_time(value: datetime | None, fmt: str = "datetime") -> str:
+        """<time> с моментом в UTC. Текст внутри — запасной, в поясе TIMEZONE, пока не отработал
+        static/time.js: он переписывает его в часовом поясе браузера"""
+        if value is None:
+            return "—"
+        local = value.astimezone(tz)
+        fallback = local.strftime(TIME_FORMATS[fmt])
+        moment = value.astimezone(UTC).isoformat(timespec="seconds")
+        tag = Markup('<time datetime="{}" data-format="{}">{}</time>')
+        return tag.format(moment, fmt, fallback)
 
     templates = Jinja2Templates(directory=WEB_DIR / "templates", context_processors=[auth_context])
     templates.env.filters["ru_date"] = ru_date

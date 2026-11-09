@@ -95,6 +95,8 @@ class WorkerHeartbeat(Base):
     worker: Mapped[str] = mapped_column(String(50), primary_key=True)
     status: Mapped[str] = mapped_column(String(20))
     current_task: Mapped[str | None] = mapped_column(Text)
+    # Когда этот экземпляр поставит следующий проход по расписанию
+    next_collect_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = updated_column()
 
     __table_args__ = (enum_check("status", WorkerStatus),)
