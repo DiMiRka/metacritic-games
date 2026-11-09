@@ -13,7 +13,7 @@
 <body{% if csrf_token %} hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'{% endif %}>
   <header class="topbar">
     <div class="wrap topbar__inner">
-      <a class="logo" href="/">Игры<span>Metacritic</span></a>
+      <a class="logo" href="/">Игры Metacritic</a>
       <nav class="topnav">
         <a href="/">Каталог</a>
         {% if auth and auth.is_admin %}<a href="/monitor">Мониторинг</a><a href="/metrics">Метрики</a>{% endif %}
@@ -33,8 +33,6 @@
     {% block content %}{% endblock %}
   </main>
   <footer class="wrap footer">
-    Данные: <a href="https://www.metacritic.com/game/" rel="noopener" target="_blank">Metacritic</a>.
-    Резюме отзывов сгенерированы нейросетью и могут содержать неточности
   </footer>
 </body>
 </html>
