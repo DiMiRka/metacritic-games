@@ -77,7 +77,7 @@ def token_hash(token: str) -> str:
 def csrf_token_for(session_token: str, *, config: Settings) -> str:
     """CSRF-токен — HMAC от токена сессии на серверном секрете: без cookie и без SECRET_KEY
     его не получить, хранить не нужно"""
-    return _csrf_token(config.secret_key, session_token)
+    return _csrf_token(config.secret_keys[0], session_token)
 
 
 def _csrf_token(secret: str, session_token: str) -> str:

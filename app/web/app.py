@@ -95,6 +95,8 @@ async def http_error(request: Request, exc: StarletteHTTPException) -> Response:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or default_settings
+    # Ключ нужен только web: без него сайт не стартует, а не падает на первом входе
+    config.require_secret_key()
     # В проде документация API не публикуется
     docs = {"docs_url": None, "redoc_url": None, "openapi_url": None} if config.is_prod else {}
     app = FastAPI(title="Metacritic Games", version="1", lifespan=lifespan, **docs)

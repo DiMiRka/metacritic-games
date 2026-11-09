@@ -9,6 +9,10 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class MissingSecretKeyError(RuntimeError):
+    pass
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -142,11 +146,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _secret_key(self) -> "Settings":
-        if not self.secret_key:
-            if self.is_prod:
-                raise ValueError("SECRET_KEY обязателен при ENV=prod: openssl rand -hex 32")
+        # В prod ключ есть только у web, и проверяет его сам web при старте: migrate и воркеры
+        # загружают те же настройки без ключа, он им не нужен
+        if not self.secret_key and not self.is_prod:
             self.secret_key = secrets.token_hex(32)
         return self
+
+    def require_secret_key(self) -> None:
+        if not self.secret_key:
+            raise MissingSecretKeyError("SECRET_KEY обязателен при ENV=prod: openssl rand -hex 32")
 
     @model_validator(mode="after")
     def _legacy_concurrency(self) -> "Settings":
@@ -174,6 +182,8 @@ class Settings(BaseSettings):
 
     @property
     def secret_keys(self) -> list[str]:
+        """Текущий ключ первым, за ним прежние. Без ключа шифровать и подписывать нечем"""
+        self.require_secret_key()
         previous = [k.strip() for k in self.secret_key_previous.split(",") if k.strip()]
         return [self.secret_key, *previous]
 

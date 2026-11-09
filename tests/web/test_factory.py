@@ -1,14 +1,14 @@
+import os
 import subprocess
 import sys
 from datetime import timedelta
 
 import pytest
-from pydantic import ValidationError
 from sqlalchemy import select, update
 
 from app.auth import service as auth_service
 from app.auth.models import UserSession
-from app.core.config import Settings, settings
+from app.core.config import MissingSecretKeyError, Settings, settings
 from app.web.app import create_app
 from tests.conftest import create_user, login_as
 
@@ -21,10 +21,30 @@ def test_create_app_uses_given_settings_without_touching_database() -> None:
     assert not hasattr(app.state, "db")
 
 
-def test_prod_requires_secret_key() -> None:
-    with pytest.raises(ValidationError, match="SECRET_KEY"):
-        Settings(env="prod", secret_key="")
+def test_prod_web_requires_secret_key() -> None:
+    config = Settings(env="prod", secret_key="")
+    with pytest.raises(MissingSecretKeyError, match="SECRET_KEY"):
+        create_app(config)
+    with pytest.raises(MissingSecretKeyError):
+        _ = config.secret_keys
     assert len(Settings(env="dev", secret_key="").secret_key) == 64
+
+
+def test_prod_settings_load_without_secret_key_outside_web() -> None:
+    """migrate и воркеры получают ENV=prod без SECRET_KEY: настройки должны загружаться"""
+    config = Settings(env="prod", secret_key="")
+    assert config.is_prod and config.secret_key == ""
+
+
+def test_worker_and_migrate_start_in_prod_without_secret_key() -> None:
+    """Как в compose: ENV=prod без SECRET_KEY, импорт воркера и миграций не падает"""
+    code = "import app.core.config, app.worker.main, app.core.db_roles"
+    # Переменные окружения важнее .env: какие бы значения ни лежали в локальном .env
+    env = {**os.environ, "ENV": "prod", "SECRET_KEY": ""}
+    result = subprocess.run(
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr[-500:]
 
 
 def test_csrf_token_depends_on_server_secret(monkeypatch) -> None:
