@@ -2,15 +2,18 @@
 
 from app.core.errors import PermanentError, RetryableError
 
-# YouTube просит подтвердить, что запрос не от бота: частая история для адресов дата-центров
-BOT_CHECK_MARKERS = ("confirm you", "not a bot", "sign in to confirm")
+# YouTube просит подтвердить, что запрос не от бота: частая история для адресов дата-центров.
+# Только «не бот»: «Sign in to confirm your age» — это возрастное ограничение одного ролика
+BOT_CHECK_MARKERS = ("not a bot", "confirm you're not", "confirm you’re not", "confirm that you")
+# Проверяются раньше бот-проверки: недоступен именно этот ролик, остальные можно пробовать
 UNAVAILABLE_MARKERS = (
     "video unavailable",
     "private video",
     "has been removed",
     "members-only",
     "age-restricted",
-    "sign in to confirm your age",
+    "confirm your age",
+    "inappropriate for some users",
 )
 
 
@@ -41,8 +44,8 @@ class NoSpeechError(PermanentError):
 
 def translate_ytdlp_error(exc: Exception) -> Exception:
     text = str(exc).lower()
-    if any(marker in text for marker in BOT_CHECK_MARKERS):
-        return YouTubeBlockedError(str(exc)[:300])
     if any(marker in text for marker in UNAVAILABLE_MARKERS):
         return VideoUnavailableError(str(exc)[:300])
+    if any(marker in text for marker in BOT_CHECK_MARKERS):
+        return YouTubeBlockedError(str(exc)[:300])
     return RetryableError(f"yt-dlp: {str(exc)[:300]}")

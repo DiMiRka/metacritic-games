@@ -73,7 +73,10 @@ def api_transport(quota: bool = False):
                         "id": "v2",
                         "snippet": {"title": "Hades #2", "channelTitle": "B"},
                         "statistics": {"viewCount": "90"},
-                        "contentDetails": {"duration": "PT30M"},
+                        "contentDetails": {
+                            "duration": "PT30M",
+                            "contentRating": {"ytRating": "ytAgeRestricted"},
+                        },
                     },
                 ]
             },
@@ -85,10 +88,32 @@ def api_transport(quota: bool = False):
 async def test_search_api_reads_views_and_durations() -> None:
     async with httpx.AsyncClient(transport=api_transport()) as client:
         found = await search(client, "key", "Hades let's play")
-    assert [(c.video_id, c.views, c.duration_seconds, c.channel) for c in found] == [
-        ("v1", 1200, 3600, "A"),
-        ("v2", 90, 1800, "B"),
+    assert [
+        (c.video_id, c.views, c.duration_seconds, c.channel, c.age_restricted) for c in found
+    ] == [
+        ("v1", 1200, 3600, "A", False),
+        ("v2", 90, 1800, "B", True),
     ]
+
+
+def test_age_restricted_videos_are_skipped() -> None:
+    """Без входа в аккаунт YouTube не отдаёт ни субтитры, ни звук роликов 18+"""
+    from dataclasses import replace
+
+    from app.youtube.search import rank_candidates
+
+    popular = replace(video("adult", "Hades let's play", 10_000, 60), age_restricted=True)
+    regular = video("ok", "Hades let's play", 100, 60)
+    assert [c.video_id for c in rank_candidates([popular, regular], "Hades", 600)] == ["ok"]
+
+
+def test_age_restriction_does_not_trip_youtube_breaker() -> None:
+    from app.crawler.breakers import judge_youtube
+    from app.jobs.breaker import Verdict
+    from app.youtube.errors import translate_ytdlp_error
+
+    error = translate_ytdlp_error(Exception("Sign in to confirm your age. This video may be"))
+    assert judge_youtube(error) is not Verdict.TRIP
 
 
 async def test_quota_raises_and_is_remembered_without_calling_api() -> None:
@@ -113,7 +138,14 @@ async def test_quota_raises_and_is_remembered_without_calling_api() -> None:
     ("message", "kind"),
     [
         ("Sign in to confirm you're not a bot", "YouTubeBlockedError"),
+        ("Sign in to confirm you’re not a bot. This helps protect", "YouTubeBlockedError"),
         ("Video unavailable. This video is private", "VideoUnavailableError"),
+        # Возрастное ограничение одного ролика — не блокировка адреса, автомат не открывается
+        (
+            "ERROR: [youtube] MM1qVVpUWYw: Sign in to confirm your age. This video may be "
+            "inappropriate for some users. Use --cookies-from-browser or --cookies",
+            "VideoUnavailableError",
+        ),
         ("HTTP Error 503", "RetryableError"),
     ],
 )

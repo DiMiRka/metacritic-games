@@ -36,6 +36,8 @@ class Candidate:
     channel: str | None
     views: int | None
     duration_seconds: int | None
+    # 18+ на YouTube: без входа в аккаунт ни субтитров, ни звука не получить
+    age_restricted: bool = False
 
     @property
     def url(self) -> str:
@@ -76,6 +78,7 @@ def rank_candidates(
         c
         for c in candidates
         if (c.duration_seconds or 0) >= min_duration_seconds
+        and not c.age_restricted
         and mentions_game(c.title, game_title)
         and not about_other_game(c.title, game_title)
     ]
@@ -193,6 +196,8 @@ async def search_api(client: httpx.AsyncClient, api_key: str, query: str) -> lis
             channel=item["snippet"].get("channelTitle"),
             views=int(item.get("statistics", {}).get("viewCount", 0)) or None,
             duration_seconds=parse_iso_duration(item.get("contentDetails", {}).get("duration")),
+            age_restricted=item.get("contentDetails", {}).get("contentRating", {}).get("ytRating")
+            == "ytAgeRestricted",
         )
         for item in details.get("items", [])
     ]
