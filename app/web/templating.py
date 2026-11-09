@@ -6,6 +6,14 @@ from zoneinfo import ZoneInfo
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
+from app.catalog.similar import (
+    Closeness,
+    SameDeveloper,
+    SharedGenres,
+    SharedPlatforms,
+    SimilarDescription,
+    SimilarGame,
+)
 from app.core.config import Settings
 from app.core.urls import IMAGE_HOSTS, VIDEO_HOSTS, YOUTUBE_HOSTS, safe_url
 
@@ -26,6 +34,50 @@ def score_level(value: float | None, scale: int = 100) -> str:
         return "none"
     value = value * 100 / scale
     return "good" if value >= 75 else "mixed" if value >= 50 else "bad"
+
+
+SIMILAR_LINE_LIMIT = 60
+SIMILAR_MAX_PARTS = 3
+SIMILAR_MAX_GENRES = 2
+# Эмбеддинг считается по названию, жанрам, разработчику и описанию: когда ни одна причина
+# не прошла порог, честно сказать можно только это
+SIMILAR_FALLBACK = "похожа по описанию и жанрам"
+CLOSENESS_WORDS = {
+    Closeness.VERY_CLOSE: "очень близкое описание",
+    Closeness.CLOSE: "близкое описание",
+}
+
+
+def _names(names: tuple[str, ...], limit: int) -> str:
+    shown = ", ".join(names[:limit])
+    return f"{shown} и ещё {len(names) - limit}" if len(names) > limit else shown
+
+
+def similar_reasons(item: SimilarGame) -> str:
+    """Строка «почему похожа»: разработчик, жанры, близость описания, платформы только
+    в добавку к единственной другой причине. Не длиннее SIMILAR_LINE_LIMIT, первая причина всегда"""
+    parts: list[str] = []
+    platforms = None
+    for reason in item.reasons:
+        if isinstance(reason, SameDeveloper):
+            parts.append("тоже от " + _names(reason.names, 2))
+        elif isinstance(reason, SharedGenres):
+            parts.append(_names(reason.names, SIMILAR_MAX_GENRES))
+        elif isinstance(reason, SimilarDescription):
+            parts.append(CLOSENESS_WORDS[reason.level])
+        elif isinstance(reason, SharedPlatforms):
+            platforms = "есть на " + " и ".join(reason.names)
+    if platforms and len(parts) == 1:
+        parts.append(platforms)
+    if not parts:
+        return SIMILAR_FALLBACK
+
+    line = parts[0]
+    for part in parts[1:SIMILAR_MAX_PARTS]:
+        if len(line) + len(" · ") + len(part) > SIMILAR_LINE_LIMIT:
+            break
+        line += " · " + part
+    return line
 
 
 def plural(n: int, one: str, few: str, many: str) -> str:
@@ -73,6 +125,7 @@ def build_templates(settings: Settings) -> Jinja2Templates:
     templates.env.filters["local_time"] = local_time
     templates.env.filters["duration"] = duration
     templates.env.filters["plural"] = plural
+    templates.env.filters["similar_reasons"] = similar_reasons
     templates.env.globals["score_level"] = score_level
     return templates
 

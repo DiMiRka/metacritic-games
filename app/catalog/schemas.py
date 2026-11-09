@@ -1,9 +1,11 @@
 from datetime import date, datetime
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.catalog.models import Game
 from app.catalog.queries import GamePage
+from app.catalog.similar import Reason, SimilarDescription, SimilarGame
 
 
 class PlatformOut(BaseModel):
@@ -79,12 +81,49 @@ class LetsplayOut(BaseModel):
     checked_at: datetime | None
 
 
-class SimilarOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+class NamesReasonOut(BaseModel):
+    """Общие жанры, студии или платформы, названия в порядке текущей игры"""
 
+    kind: Literal["genres", "developer", "platforms"]
+    values: list[str]
+
+
+class DescriptionReasonOut(BaseModel):
+    """Близкое описание: similarity = 1 − косинусное расстояние эмбеддингов"""
+
+    kind: Literal["description"]
+    similarity: float
+    level: Literal["close", "very_close"]
+
+
+ReasonOut = Annotated[NamesReasonOut | DescriptionReasonOut, Field(discriminator="kind")]
+
+
+def reason_out(reason: Reason) -> NamesReasonOut | DescriptionReasonOut:
+    if isinstance(reason, SimilarDescription):
+        return DescriptionReasonOut(
+            kind="description", similarity=round(reason.similarity, 2), level=reason.level
+        )
+    return NamesReasonOut(kind=reason.kind, values=list(reason.names))
+
+
+class SimilarOut(BaseModel):
     slug: str
     title: str
     cover_url: str | None
+    # Почему игра попала в похожие. Пусто, если её нашёл эмбеддинг, но ни одна причина
+    # не прошла порог, тогда сходство общее: по описанию и жанрам
+    reasons: list[ReasonOut]
+
+    @classmethod
+    def from_similar(cls, item: SimilarGame) -> "SimilarOut":
+        game = item.game
+        return cls(
+            slug=game.slug,
+            title=game.title,
+            cover_url=game.cover_url,
+            reasons=[reason_out(r) for r in item.reasons],
+        )
 
 
 class GameDetailOut(BaseModel):
@@ -107,7 +146,7 @@ class GameDetailOut(BaseModel):
     last_processed_at: datetime | None
 
     @classmethod
-    def from_game(cls, game: Game, similar: list[Game]) -> "GameDetailOut":
+    def from_game(cls, game: Game, similar: list[SimilarGame]) -> "GameDetailOut":
         summaries = {s.source: SummaryOut.model_validate(s) for s in game.summaries}
         return cls(
             slug=game.slug,
@@ -123,7 +162,7 @@ class GameDetailOut(BaseModel):
             critic_summary=summaries.get("critic"),
             user_summary=summaries.get("user"),
             letsplay=LetsplayOut.model_validate(game.letsplay) if game.letsplay else None,
-            similar=[SimilarOut.model_validate(g) for g in similar],
+            similar=[SimilarOut.from_similar(s) for s in similar],
             updated_at=game.updated_at,
             last_processed_at=game.last_processed_at,
         )

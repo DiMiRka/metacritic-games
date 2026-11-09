@@ -125,8 +125,12 @@
   <section class="panel">
     <div class="panel__head"><h2 class="panel__title">Похожие игры</h2></div>
     <ul class="similar">
-      {% for other in similar %}
-        <li><a href="/games/{{ other.slug }}">{{ cover(other, "cover--cut") }}<span>{{ other.title }}</span></a></li>
+      {% for item in similar %}
+        {% set other = item.game %}
+        <li>
+          <a href="/games/{{ other.slug }}">{{ cover(other, "cover--cut") }}<span>{{ other.title }}</span></a>
+          <p class="similar__why">{{ item | similar_reasons }}</p>
+        </li>
       {% endfor %}
     </ul>
   </section>

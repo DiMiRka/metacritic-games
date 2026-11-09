@@ -149,6 +149,11 @@ async def test_api_game_detail(client) -> None:
     assert data["critic_summary"]["likes"] == ["Огромный открытый мир"]
     assert data["user_summary"] is None
     assert [g["slug"] for g in data["similar"]] == ["elden-ring-nightreign"]
+    assert data["similar"][0]["reasons"] == [
+        {"kind": "developer", "values": ["FromSoftware"]},
+        {"kind": "genres", "values": ["Action RPG"]},
+        {"kind": "platforms", "values": ["PC"]},
+    ]
 
 
 async def test_api_game_not_found(client) -> None:
@@ -177,6 +182,7 @@ async def test_game_page(client) -> None:
     assert "PLAYSTATION-5" in response.text
     assert "25 февраля 2022" in response.text
     assert 'href="/games/elden-ring-nightreign"' in response.text
+    assert '<p class="similar__why">тоже от FromSoftware · Action RPG</p>' in response.text
 
 
 async def test_game_page_without_scores(client) -> None:
