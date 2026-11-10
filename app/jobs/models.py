@@ -100,6 +100,8 @@ class Breaker(Base):
     state: Mapped[str] = mapped_column(String(10), default=BreakerState.CLOSED)
     failures: Mapped[int] = mapped_column(Integer, default=0)
     opened_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Последний сбой: монитор показывает его как причину приостановки
+    last_error: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = updated_column()
 
     __table_args__ = (enum_check("state", BreakerState),)

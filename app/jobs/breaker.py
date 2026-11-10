@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.jobs.models import Breaker, BreakerState
 
+MAX_REASON_LENGTH = 300
+
 
 class Verdict(StrEnum):
     SUCCESS = "success"  # сервис ответил: сбрасывает счётчик подряд идущих ошибок
@@ -63,8 +65,10 @@ async def record(
     policy: BreakerPolicy,
     verdict: Verdict,
     until: datetime | None = None,
+    reason: str | None = None,
 ) -> None:
-    """until: сбой известен до этого момента (сброс квоты), автомат открывается не короче"""
+    """until: сбой известен до этого момента (сброс квоты), автомат открывается не короче.
+    reason: текст сбоя, монитор показывает его как причину приостановки"""
     if verdict == Verdict.NEUTRAL:
         return
     async with session_factory() as session, session.begin():
@@ -81,6 +85,8 @@ async def record(
             return
         breaker, now = await _locked(session, policy.name)
         breaker.failures += 1
+        if reason:
+            breaker.last_error = reason[:MAX_REASON_LENGTH]
         should_open = (
             verdict == Verdict.TRIP
             or breaker.state == BreakerState.HALF_OPEN

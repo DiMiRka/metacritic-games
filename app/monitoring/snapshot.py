@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -14,6 +15,12 @@ from app.crawler.heartbeat import WORKER_STALE_SECONDS, live_workers
 from app.crawler.models import CrawlState, Run, RunItem, RunStatus, WorkerHeartbeat
 from app.crawler.runs import run_stats
 from app.jobs.models import ACTIVE_STATUSES, Breaker, Job, JobKind, JobStatus
+from app.monitoring.labels import (
+    BREAKER_KINDS,
+    BREAKER_LABELS,
+    BREAKER_THRESHOLDS,
+    describe_worker,
+)
 
 RECENT_RUNS = 10
 RECENT_ERRORS = 10
@@ -22,6 +29,10 @@ RECENT_DEAD = 10
 
 class WorkerOut(BaseModel):
     worker: str
+    # Подписи для людей: «Воркер летсплеев», что он делает и контейнер
+    title: str = ""
+    duties: str = ""
+    host: str = ""
     status: str
     current_task: str | None
     next_collect_at: datetime | None
@@ -81,9 +92,15 @@ class JobOut(BaseModel):
 
 class BreakerOut(BaseModel):
     name: str
+    title: str = ""
+    services: str = ""
     state: str
     failures: int
+    threshold: int = 0
     opened_until: datetime | None
+    # Ошибка, из-за которой сервис приостановлен, и когда в последний раз задача прошла
+    last_error: str | None = None
+    last_done_at: datetime | None = None
 
 
 class Counters(BaseModel):
@@ -104,6 +121,8 @@ class Counters(BaseModel):
 class MonitorSnapshot(BaseModel):
     now: datetime
     workers: list[WorkerOut]
+    # Прежние экземпляры, скрытые из списка: контейнеры прошлых сборок той же роли
+    workers_hidden: int = 0
     current_run: RunOut | None
     collect_active: bool
     runs: list[RunOut]
@@ -193,6 +212,77 @@ def llm_cost(input_tokens: int, output_tokens: int, config: Settings) -> float |
     return (input_tokens * price_in + output_tokens * price_out) / 1_000_000
 
 
+async def _breakers(session: AsyncSession, config: Settings) -> list[BreakerOut]:
+    """Все автоматы, даже ещё не срабатывавшие: строка в breakers появляется при первом сбое"""
+    rows = {b.name: b for b in (await session.scalars(select(Breaker))).all()}
+    kinds = [kind for group in BREAKER_KINDS.values() for kind in group]
+    done = dict(
+        (
+            await session.execute(
+                select(Job.kind, func.max(Job.finished_at))
+                .where(Job.kind.in_(kinds), Job.status == JobStatus.DONE)
+                .group_by(Job.kind)
+            )
+        ).all()
+    )
+    result = []
+    for name in [*BREAKER_LABELS, *sorted(set(rows) - set(BREAKER_LABELS))]:
+        row = rows.get(name)
+        title, services = BREAKER_LABELS.get(name, (name, ""))
+        moments = [done[k] for k in BREAKER_KINDS.get(name, ()) if done.get(k)]
+        result.append(
+            BreakerOut(
+                name=name,
+                title=title,
+                services=services,
+                state=row.state if row else "closed",
+                failures=row.failures if row else 0,
+                threshold=getattr(config, BREAKER_THRESHOLDS.get(name, ""), 0),
+                opened_until=row.opened_until if row else None,
+                last_error=row.last_error if row else None,
+                last_done_at=max(moments, default=None),
+            )
+        )
+    return result
+
+
+def visible_workers(
+    heartbeats: Sequence[WorkerHeartbeat], fresh: datetime
+) -> tuple[list[WorkerOut], int]:
+    """По каждой роли (набору пулов) живые экземпляры, а если живых нет — последний из
+    замолчавших: упавший воркер должен быть виден. Прежние контейнеры той же роли после
+    деплоя прячутся. Записи старого формата без роли показываются, только пока живы"""
+    by_role: dict[str | None, list[WorkerOut]] = {}
+    for h in heartbeats:
+        name = describe_worker(h.worker)
+        out = WorkerOut(
+            worker=h.worker,
+            title=name.title,
+            duties=name.duties,
+            host=name.host,
+            status=h.status,
+            current_task=h.current_task,
+            next_collect_at=h.next_collect_at,
+            updated_at=h.updated_at,
+            alive=h.updated_at >= fresh and h.status != "stopped",
+        )
+        by_role.setdefault(name.role, []).append(out)
+    shown: list[WorkerOut] = []
+    for role, group in by_role.items():
+        living = [w for w in group if w.alive]
+        if living or role is None:
+            shown += living
+        else:
+            shown.append(max(group, key=lambda w: w.updated_at))
+    if not shown and by_role:
+        # Молчат все, и все в старом формате: пустой список выглядел бы как «воркера не было»
+        shown.append(
+            max((w for group in by_role.values() for w in group), key=lambda w: w.updated_at)
+        )
+    shown.sort(key=lambda w: (not w.alive, w.title, w.worker))
+    return shown, len(heartbeats) - len(shown)
+
+
 async def snapshot(
     session: AsyncSession, *, config: Settings, now: datetime | None = None
 ) -> MonitorSnapshot:
@@ -203,17 +293,7 @@ async def snapshot(
     heartbeats = (
         await session.scalars(select(WorkerHeartbeat).order_by(WorkerHeartbeat.worker))
     ).all()
-    workers = [
-        WorkerOut(
-            worker=h.worker,
-            status=h.status,
-            current_task=h.current_task,
-            next_collect_at=h.next_collect_at,
-            updated_at=h.updated_at,
-            alive=h.updated_at >= fresh and h.status != "stopped",
-        )
-        for h in heartbeats
-    ]
+    workers, workers_hidden = visible_workers(heartbeats, fresh)
 
     runs = await _runs(session, now)
     collect_active = bool(
@@ -269,6 +349,7 @@ async def snapshot(
     return MonitorSnapshot(
         now=now,
         workers=workers,
+        workers_hidden=workers_hidden,
         current_run=next((r for r in runs if r.status == RunStatus.RUNNING), None),
         collect_active=collect_active,
         runs=runs,
@@ -286,10 +367,7 @@ async def snapshot(
         queue=await _queue(session),
         expired=[_job_out(j) for j in expired],
         dead=[_job_out(j) for j in dead],
-        breakers=[
-            BreakerOut.model_validate(b, from_attributes=True)
-            for b in (await session.scalars(select(Breaker).order_by(Breaker.name))).all()
-        ],
+        breakers=await _breakers(session, config),
         failed_logins=[
             FailedLoginOut.model_validate(f, from_attributes=True)
             for f in await failed_login_series(session)

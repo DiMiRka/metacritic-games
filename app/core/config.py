@@ -170,14 +170,23 @@ class Settings(BaseSettings):
 
     @property
     def worker_identity(self) -> str:
-        return self.worker_id or f"{socket.gethostname()}:{os.getpid()}"
+        """пулы@контейнер:pid, например letsplay@14e5b4ae2b44:1. По пулам монитор понимает,
+        что делает экземпляр, и прячет прежние контейнеры той же роли после деплоя"""
+        if self.worker_id:
+            return self.worker_id
+        role = ",".join(self.worker_pool_names) or "all"
+        return f"{role}@{socket.gethostname()}:{os.getpid()}"
+
+    @property
+    def worker_pool_names(self) -> list[str]:
+        return list(dict.fromkeys(p.strip() for p in self.worker_pools.split(",") if p.strip()))
 
     @property
     def is_prod(self) -> bool:
         return self.env == "prod"
 
     def pool_enabled(self, name: str) -> bool:
-        names = {p.strip() for p in self.worker_pools.split(",") if p.strip()}
+        names = self.worker_pool_names
         return not names or name in names
 
     @property

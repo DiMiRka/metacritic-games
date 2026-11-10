@@ -126,4 +126,5 @@ class Breakers:
     async def outcome(self, job: ClaimedJob, error: BaseException | None) -> None:
         if policy := POLICY_BY_KIND.get(job.kind):
             until = error.until if isinstance(error, DeferredError) else None
-            await record(self.session_factory, policy, policy.judge(error), until)
+            reason = f"{type(error).__name__}: {error}" if error else None
+            await record(self.session_factory, policy, policy.judge(error), until, reason)

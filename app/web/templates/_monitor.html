@@ -49,40 +49,51 @@
         <li>
           <span class="dot dot--{{ 'busy' if w.alive and w.status == 'running' else 'ok' if w.alive else 'off' }}" aria-hidden="true"></span>
           <div>
-            <strong>{{ w.worker }}</strong> —
-            {% if not w.alive %}не отвечает{% elif w.status == "running" %}работает{% else %}ждёт{% endif %}
+            <strong title="{{ w.worker }}">{{ w.title or w.worker }}</strong> —
+            {% if not w.alive %}не отвечает{% elif w.status == "running" %}выполняет задачи{% else %}ждёт задач{% endif %}
+            {% if w.duties %}<div class="muted small">{{ w.duties }}</div>{% endif %}
             <div class="muted small">
-              {% if w.alive and w.current_task %}{{ w.current_task }} · {% elif w.alive and w.next_collect_at %}следующий проход в {{ w.next_collect_at | local_time("time") }} · {% endif %}сигнал {{ w.updated_at | local_time }}
+              {% if w.alive and w.current_task %}сейчас: {{ w.current_task }} · {% elif w.alive and w.next_collect_at %}следующий проход в {{ w.next_collect_at | local_time("time") }} · {% endif %}последний сигнал {{ w.updated_at | local_time }}{% if w.host and w.host != w.title %} · контейнер {{ w.host }}{% endif %}
             </div>
           </div>
         </li>
       {% endfor %}
     </ul>
+    {% if m.workers_hidden %}<p class="muted small">Скрыто прежних экземпляров: {{ m.workers_hidden }}. Это контейнеры прошлых сборок, их записи удалятся автоматически</p>{% endif %}
     {% else %}
       <p class="muted">Воркер ещё ни разу не запускался</p>
     {% endif %}
   </section>
 
   <section class="panel">
-    <div class="panel__head"><h2 class="panel__title">Автоматы</h2></div>
-    {% if m.breakers %}
+    <div class="panel__head">
+      <h2 class="panel__title">Внешние сервисы</h2>
+      <span class="panel__meta" title="Автомат защиты: после серии сбоев сервиса его задачи ждут, не тратя попыток">автоматы защиты</span>
+    </div>
     <ul class="status-list">
       {% for b in m.breakers %}
         <li>
           <span class="dot dot--{{ 'ok' if b.state == 'closed' else 'warn' }}" aria-hidden="true"></span>
           <div>
-            <strong>{{ b.name }}</strong> —
-            {% if b.state == "closed" %}закрыт
-            {% elif b.state == "open" %}открыт до {{ b.opened_until | local_time }}, задачи отложены
-            {% else %}проверка, пробная задача в работе{% endif %}
-            {% if b.failures %}<div class="muted small">сбоев подряд: {{ b.failures }}</div>{% endif %}
+            <strong>{{ b.title }}</strong> —
+            {% if b.state == "closed" %}работает
+            {% elif b.state == "open" and b.opened_until and b.opened_until <= m.now %}ждёт пробную задачу
+            {% elif b.state == "open" %}приостановлен до {{ b.opened_until | local_time }}
+            {% else %}проверяется{% endif %}
+            {% if b.services %}<div class="muted small">{{ b.services }}</div>{% endif %}
+            <div class="muted small">
+              {% if b.state == "open" and b.opened_until and b.opened_until <= m.now %}Пауза закончилась {{ b.opened_until | local_time }}. Первая же задача этого сервиса станет пробной и решит, возобновить ли работу
+              {% elif b.state == "open" %}Задачи ждут в очереди, попытки не тратятся. После этого времени одна пробная задача проверит, ожил ли сервис
+              {% elif b.state == "half_open" %}Пробная задача решает, возобновить ли работу{% if b.opened_until %}, ждём её до {{ b.opened_until | local_time }}{% endif %}
+              {% elif b.last_done_at %}Последняя выполненная задача {{ b.last_done_at | local_time }}
+              {% else %}Задач ещё не было{% endif %}
+            </div>
+            {% if b.state != "closed" and b.last_error %}<div class="muted small">Причина: <code>{{ b.last_error }}</code></div>{% endif %}
+            {% if b.failures %}<div class="muted small">Сбоев подряд: {{ b.failures }}{% if b.state == "closed" and b.threshold %}, приостановится после {{ b.threshold }}{% endif %}</div>{% endif %}
           </div>
         </li>
       {% endfor %}
     </ul>
-    {% else %}
-      <p class="muted">Сбоев внешних сервисов не было</p>
-    {% endif %}
   </section>
 </div>
 

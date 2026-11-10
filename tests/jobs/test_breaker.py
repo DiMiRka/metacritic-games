@@ -104,3 +104,10 @@ async def test_trip_with_until_opens_until_that_moment(session_factory) -> None:
     async with session_factory() as session:
         breaker = await session.get(Breaker, "svc")
     assert breaker.opened_until > soon + timedelta(seconds=500)
+
+
+async def test_failure_reason_stored(session_factory) -> None:
+    await record(session_factory, policy(), Verdict.FAILURE, reason="HTTP 503" * 100)
+    async with session_factory() as session:
+        breaker = await session.get(Breaker, "svc")
+    assert breaker.last_error.startswith("HTTP 503") and len(breaker.last_error) == 300

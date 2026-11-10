@@ -1,4 +1,5 @@
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, update
@@ -85,7 +86,9 @@ async def test_snapshot(session_factory, monkeypatch) -> None:
         alive = await worker_alive(session)
 
     assert alive is True
-    assert [(w.worker, w.alive) for w in data.workers] == [("w1", True), ("w2", False)]
+    # w2 в старом формате имени, без роли, и давно молчит: прежняя сборка, в списке не нужна
+    assert [(w.worker, w.alive) for w in data.workers] == [("w1", True)]
+    assert data.workers_hidden == 1
     assert data.current_run.id == current_id
     assert data.current_run.requested_by == "boss"
     old = data.runs[1]
@@ -108,3 +111,119 @@ async def test_worker_alive_ignores_stopped(session_factory) -> None:
         session.add(WorkerHeartbeat(worker="w1", status="stopped"))
     async with session_factory() as session:
         assert await worker_alive(session) is False
+
+
+def test_old_containers_of_same_role_hidden() -> None:
+    """После деплоя у контейнеров новый hostname: прежние экземпляры той же роли прячутся,
+    а роль, у которой живых нет, показывается последним замолчавшим экземпляром"""
+    from types import SimpleNamespace
+
+    from app.monitoring.snapshot import visible_workers
+
+    now = now_tz()
+    fresh = now - timedelta(seconds=45)
+
+    def beat(worker, age_minutes, status="idle"):
+        return SimpleNamespace(
+            worker=worker,
+            status=status,
+            current_task=None,
+            next_collect_at=None,
+            updated_at=now - timedelta(minutes=age_minutes),
+        )
+
+    rows = [
+        beat("metacritic,summarize,embed@aaa111:1", 900),
+        beat("metacritic,summarize,embed@bbb222:1", 0),
+        beat("letsplay@ccc333:1", 900),
+        beat("letsplay@ddd444:1", 30),
+        beat("0febe0c38c98:1", 900),
+    ]
+    shown, hidden = visible_workers(rows, fresh)
+
+    assert [(w.title, w.host, w.alive) for w in shown] == [
+        ("Основной воркер", "bbb222", True),
+        ("Воркер летсплеев", "ddd444", False),
+    ]
+    assert shown[0].duties == "обход Metacritic, резюме, переводы и заключения LLM, эмбеддинги"
+    assert hidden == 3
+
+
+def test_worker_identity_names_its_pools(monkeypatch) -> None:
+    from app.monitoring.labels import describe_worker
+
+    monkeypatch.setattr(settings, "worker_id", "")
+    monkeypatch.setattr(settings, "worker_pools", "letsplay")
+    identity = settings.worker_identity
+    assert identity.startswith("letsplay@") and ":" in identity
+    assert describe_worker(identity).title == "Воркер летсплеев"
+
+    monkeypatch.setattr(settings, "worker_pools", "")
+    assert settings.worker_identity.startswith("all@")
+    assert describe_worker("all@host:1").duties == "все виды задач"
+
+
+def test_breaker_kinds_match_policies() -> None:
+    """Подписи монитора повторяют POLICY_BY_KIND: в web его не импортировать"""
+    from app.crawler.breakers import POLICY_BY_KIND
+    from app.monitoring.labels import BREAKER_KINDS, BREAKER_LABELS
+
+    expected: dict[str, set[str]] = {}
+    for kind, policy in POLICY_BY_KIND.items():
+        expected.setdefault(policy.name, set()).add(str(kind))
+    assert {name: set(kinds) for name, kinds in BREAKER_KINDS.items()} == expected
+    assert set(BREAKER_LABELS) == set(expected)
+
+
+async def test_breakers_explain_state(session_factory) -> None:
+    from datetime import UTC, datetime
+
+    from app.jobs.breaker import Verdict, record
+    from app.jobs.queue import claim, complete
+    from app.monitoring.snapshot import snapshot
+
+    async with session_factory() as session, session.begin():
+        await enqueue(session, "translate", {"game_id": 1})
+    async with session_factory() as session, session.begin():
+        [job] = await claim(session, "w", ["translate"], 1, 60)
+    async with session_factory() as session, session.begin():
+        await complete(session, job.id, "w")
+
+    youtube = SimpleNamespace(
+        name="youtube",
+        threshold=lambda: 5,
+        open_seconds=lambda: 1800,
+        probe_seconds=lambda: 60,
+    )
+    reset = datetime.now(UTC) + timedelta(hours=2)
+    reason = "QuotaExceededError: квота YouTube Data API исчерпана"
+    await record(session_factory, youtube, Verdict.TRIP, reset, reason)
+
+    async with session_factory() as session:
+        data = await snapshot(session, config=settings)
+    breakers = {b.name: b for b in data.breakers}
+
+    # Все сервисы видны, даже если сбоев ещё не было
+    assert list(breakers) == ["metacritic", "llm", "youtube"]
+    assert (breakers["llm"].state, breakers["llm"].title) == ("closed", "LLM")
+    assert breakers["llm"].last_done_at is not None
+    assert breakers["metacritic"].last_done_at is None
+    assert breakers["youtube"].state == "open"
+    assert breakers["youtube"].last_error == reason
+
+
+def test_all_silent_old_format_still_shows_last() -> None:
+    """Пустой список выглядел бы как «воркер ни разу не запускался»"""
+    from app.monitoring.snapshot import visible_workers
+
+    now = now_tz()
+    rows = [
+        SimpleNamespace(
+            worker=name, status="idle", current_task=None, next_collect_at=None,
+            updated_at=now - timedelta(minutes=age),
+        )
+        for name, age in (("old-a:1", 90), ("old-b:1", 30))
+    ]  # fmt: skip
+    shown, hidden = visible_workers(rows, now - timedelta(seconds=45))
+    assert [(w.worker, w.alive) for w in shown] == [("old-b:1", False)]
+    assert hidden == 1
