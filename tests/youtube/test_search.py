@@ -261,3 +261,34 @@ def test_rank_candidates_letsplays_first_then_by_views() -> None:
         "lp2",
         "review",
     ]
+
+
+def test_cookies_copied_to_writable_file(tmp_path) -> None:
+    """yt-dlp пишет cookies обратно при закрытии: исходник только для чтения не трогаем"""
+    import os
+    import stat
+
+    from app.youtube.client import writable_copy
+
+    source = tmp_path / "youtube-cookies.txt"
+    source.write_text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tx\n")
+    os.chmod(source, stat.S_IREAD)
+
+    copy = writable_copy(str(source))
+    try:
+        assert copy != str(source)
+        with open(copy, "a", encoding="utf-8") as fh:
+            fh.write("# обновлено yt-dlp\n")
+        assert "обновлено" not in source.read_text()
+    finally:
+        os.chmod(source, stat.S_IREAD | stat.S_IWRITE)
+        os.remove(copy)
+
+
+def test_missing_cookies_file_reported_clearly(tmp_path) -> None:
+    import pytest
+
+    from app.youtube.client import writable_copy
+
+    with pytest.raises(FileNotFoundError, match="YOUTUBE_COOKIES_FILE"):
+        writable_copy(str(tmp_path / "nope.txt"))

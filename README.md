@@ -305,10 +305,11 @@ POST /api/v1/runs ──────┴─► collect ─► scrape_game ×20 �
 **Cookies аккаунта Google.** Если YouTube требует подтвердить, что запрос не от бота, помогают cookies аккаунта. Файл cookies — это полный доступ к аккаунту, поэтому:
 
 1. Заведите **отдельный пустой аккаунт** только для этого, не личный и не рабочий. YouTube может заблокировать его за автоматизированные запросы, и терять его не жалко.
-2. Выгрузите cookies в формате Netscape (расширение браузера «Get cookies.txt LOCALLY» или `yt-dlp --cookies-from-browser`) в `secrets/youtube-cookies.txt` на сервере. Права файла `chmod 600`, в git файл не попадает.
-3. Смонтируйте его только для чтения: раскомментируйте строку `volumes` у `worker-letsplay` в `docker-compose.yml` (`./secrets/youtube-cookies.txt:/run/secrets/youtube-cookies.txt:ro`) и укажите `YOUTUBE_COOKIES_FILE=/run/secrets/youtube-cookies.txt` в `.env`.
+2. Выгрузите cookies в формате Netscape из **приватного окна** браузера: войдите в этот аккаунт на youtube.com, выгрузите cookies расширением «Get cookies.txt LOCALLY» и сразу закройте окно, не выходя из аккаунта. Если продолжать пользоваться той же сессией в браузере, YouTube быстро обновит cookies, и выгруженные перестанут действовать.
+3. Положите файл на сервер в `secrets/youtube-cookies.txt` и дайте прочитать его только пользователю контейнера (uid проверяется командой `docker compose exec worker-letsplay id -u`, обычно 1000): `chown 1000:1000 secrets/youtube-cookies.txt && chmod 600 secrets/youtube-cookies.txt`. В git и в образ файл не попадает.
+4. Смонтируйте его только для чтения: раскомментируйте строку `volumes` у `worker-letsplay` в `docker-compose.yml` (`./secrets/youtube-cookies.txt:/run/secrets/youtube-cookies.txt:ro`), укажите `YOUTUBE_COOKIES_FILE=/run/secrets/youtube-cookies.txt` в `.env` и выполните `docker compose up -d worker-letsplay`.
 
-Файл видит только `worker-letsplay`. Cookies со временем истекают: если снова появились проверки «не бот ли вы», выгрузите их заново.
+Файл видит только `worker-letsplay`. yt-dlp при закрытии записывает обновлённые cookies обратно, поэтому воркер при старте копирует файл во временную папку `/tmp` и работает с копией: смонтированный исходник остаётся только для чтения. Cookies со временем истекают: если снова появились проверки «не бот ли вы», выгрузите их заново и перезапустите `worker-letsplay`.
 
 **Ограничения:**
 

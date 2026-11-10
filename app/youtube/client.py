@@ -1,5 +1,9 @@
 """Летсплей игры на YouTube: самый популярный ролик и речь блогера в нём текстом"""
 
+import os
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Protocol
 
 import httpx
@@ -7,6 +11,20 @@ import httpx
 from app.core.config import Settings
 from app.youtube.search import Candidate, SearchQuota, query_for, rank_candidates, search
 from app.youtube.transcript import Transcript, TranscriptFetcher, WhisperTranscriber
+
+
+def writable_copy(path: str) -> str:
+    """yt-dlp при закрытии записывает cookies обратно в тот же файл. Исходный файл
+    смонтирован только для чтения, а файловая система контейнера read-only, поэтому
+    работаем с копией во временной папке: обновлённые YouTube cookies живут в ней"""
+    source = Path(path)
+    if not source.is_file():
+        raise FileNotFoundError(f"YOUTUBE_COOKIES_FILE: файла {path} нет в контейнере")
+    fd, copy = tempfile.mkstemp(prefix="youtube-cookies-", suffix=".txt")
+    os.close(fd)
+    shutil.copyfile(source, copy)
+    os.chmod(copy, 0o600)
+    return copy
 
 
 class LetsplaySource(Protocol):
@@ -22,7 +40,7 @@ class YouTubeLetsplays:
         options = {"quiet": True, "no_warnings": True, "noprogress": True}
         if config.youtube_cookies_file:
             # Cookies аккаунта помогают, когда YouTube просит подтвердить, что запрос не от бота
-            options["cookiefile"] = config.youtube_cookies_file
+            options["cookiefile"] = writable_copy(config.youtube_cookies_file)
         self.http = httpx.AsyncClient(timeout=30)
         self.quota = SearchQuota()
         self.transcripts = TranscriptFetcher(
