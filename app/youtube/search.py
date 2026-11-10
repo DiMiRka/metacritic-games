@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from loguru import logger
 
-from app.core.errors import RetryableError
+from app.core.errors import DeferredError
 from app.youtube.errors import YouTubeApiConfigError, YouTubeApiError
 
 API_URL = "https://www.googleapis.com/youtube/v3"
@@ -101,8 +101,11 @@ def parse_iso_duration(value: str | None) -> int | None:
     return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
 
 
-class QuotaExceededError(RetryableError):
-    """Дневная квота YouTube Data API исчерпана: летсплеи ждут её сброса"""
+class QuotaExceededError(DeferredError):
+    """Дневная квота YouTube Data API исчерпана: летсплеи ждут её сброса без траты попыток"""
+
+    def __init__(self, message: str, until: datetime | None = None) -> None:
+        super().__init__(message, until or next_quota_reset())
 
 
 # Причины из ответа API. Квота сбрасывается в полночь по тихоокеанскому времени
@@ -225,7 +228,8 @@ async def search(
     quota = quota or SearchQuota()
     if not quota.available():
         raise QuotaExceededError(
-            f"квота YouTube Data API исчерпана до {quota.exhausted_until:%Y-%m-%d %H:%M} UTC"
+            f"квота YouTube Data API исчерпана до {quota.exhausted_until:%Y-%m-%d %H:%M} UTC",
+            quota.exhausted_until,
         )
     try:
         return await search_api(client, api_key, query)

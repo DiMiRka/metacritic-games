@@ -13,7 +13,13 @@ from app.core.config import settings
 from app.core.errors import PermanentError
 from app.core.logs import log_context
 from app.crawler.cursor import Cursor, collect_batch
-from app.crawler.letsplay import LetsplayConclude, LetsplayTranscribe, letsplay_due, mark_failed
+from app.crawler.letsplay import (
+    LetsplayConclude,
+    LetsplayTranscribe,
+    best_metascore,
+    letsplay_due,
+    mark_failed,
+)
 from app.crawler.lock import try_lock, unlock
 from app.crawler.models import CrawlPhase, CrawlState, RunItemStage, RunItemStatus
 from app.crawler.processor import (
@@ -142,7 +148,8 @@ async def enqueue_derived(
             run_id=run_id,
         )
         derived.embeddings += job_id is not None
-    if letsplay and await letsplay_due(
+    metascore = await best_metascore(session, game_id) if letsplay else None
+    if metascore is not None and await letsplay_due(
         session, game_id, refresh_days=settings.letsplay_refresh_days
     ):
         job_id = await enqueue(
@@ -150,6 +157,8 @@ async def enqueue_derived(
             JobKind.LETSPLAY,
             {"game_id": game_id},
             dedupe_key=f"letsplay:{game_id}",
+            # Квоты на все игры не хватает: первыми ищутся летсплеи игр с лучшей оценкой
+            priority=metascore,
             # Без прохода: летсплеи идут минутами и в отдельном сервисе. Проход не должен
             # ждать Whisper, а остановленный worker-letsplay не должен держать его открытым
             run_id=None,
@@ -401,7 +410,14 @@ class CrawlStages:
     # letsplay
 
     async def letsplay(self, job: ClaimedJob) -> StageResult:
-        result = await self.transcriber.run(job.payload["game_id"], job.run_id)
+        game_id = job.payload["game_id"]
+        async with self.session_factory() as session:
+            metascore = await best_metascore(session, game_id)
+        if metascore is None:
+            # Задача поставлена до правила «только с Metascore»: квоту не тратим, летсплей
+            # поставит следующий обход, когда у игры появится оценка
+            return StageResult(game_id, False)
+        result = await self.transcriber.run(game_id, job.run_id)
         return StageResult(result.game_id, result.changed)
 
     async def letsplay_conclude(self, job: ClaimedJob) -> StageResult:

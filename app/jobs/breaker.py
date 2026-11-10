@@ -59,8 +59,12 @@ async def gate(
 
 
 async def record(
-    session_factory: async_sessionmaker[AsyncSession], policy: BreakerPolicy, verdict: Verdict
+    session_factory: async_sessionmaker[AsyncSession],
+    policy: BreakerPolicy,
+    verdict: Verdict,
+    until: datetime | None = None,
 ) -> None:
+    """until: сбой известен до этого момента (сброс квоты), автомат открывается не короче"""
     if verdict == Verdict.NEUTRAL:
         return
     async with session_factory() as session, session.begin():
@@ -84,4 +88,6 @@ async def record(
         )
         if should_open:
             breaker.state = BreakerState.OPEN
-            breaker.opened_until = now + timedelta(seconds=policy.open_seconds())
+            opened_until = now + timedelta(seconds=policy.open_seconds())
+            # Квота сбрасывается раз в сутки: пробы каждые полчаса до сброса бессмысленны
+            breaker.opened_until = max(opened_until, until) if until else opened_until

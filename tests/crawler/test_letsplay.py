@@ -233,3 +233,46 @@ async def test_blocked_youtube_stops_without_trying_next(
         FakeSummarizer(), letsplays=letsplays,
     )  # fmt: skip
     assert letsplays.transcribed == ["v1"]
+
+
+async def test_letsplay_only_for_games_with_metascore(db_engine, session_factory) -> None:
+    """Квоты на все игры не хватает: у starshapes нет Metascore, летсплей не ищется"""
+    from app.jobs.models import Job
+
+    letsplays = FakeLetsplays()
+    client = FakeClient(new_releases=["elden-ring", "starshapes"], games=GAMES)
+    await run_pipeline(db_engine, session_factory, client, FakeSummarizer(), letsplays=letsplays)
+
+    assert letsplays.searches == ["Elden Ring"]
+    async with session_factory() as session:
+        jobs = (await session.scalars(select(Job).where(Job.kind == "letsplay"))).all()
+    # Приоритет — лучший Metascore игры: очередь разбирается от лучших игр
+    assert [(j.payload["game_id"] is not None, j.priority) for j in jobs] == [(True, 96)]
+
+
+async def test_old_letsplay_job_without_metascore_skips_api(db_engine, session_factory) -> None:
+    """Задачи, поставленные до правила, закрываются без запроса к YouTube"""
+    from app.jobs.models import Job
+    from app.jobs.queue import enqueue
+
+    letsplays = FakeLetsplays()
+    client = FakeClient(new_releases=["starshapes"], games=GAMES)
+    await run_pipeline(db_engine, session_factory, client, FakeSummarizer())
+    async with session_factory() as session, session.begin():
+        game_id = await session.scalar(select(Game.id).where(Game.slug == "starshapes"))
+        await enqueue(session, "letsplay", {"game_id": game_id}, dedupe_key=f"letsplay:{game_id}")
+
+    await run_pipeline(db_engine, session_factory, client, FakeSummarizer(), letsplays=letsplays)
+    async with session_factory() as session:
+        job = await session.scalar(select(Job).where(Job.kind == "letsplay"))
+    assert job.status == "done" and letsplays.searches == []
+    assert await letsplay_row(session_factory) is None
+
+
+def test_quota_error_defers_until_reset() -> None:
+    from app.core.errors import DeferredError
+    from app.youtube.search import QuotaExceededError, next_quota_reset
+
+    error = QuotaExceededError("search: ['quotaExceeded']")
+    assert isinstance(error, DeferredError)
+    assert abs((error.until - next_quota_reset()).total_seconds()) < 5

@@ -154,3 +154,33 @@ async def test_heartbeat_stores_next_collect_as_moment(db_engine, session_factor
     await worker.heartbeat("stopped")
     async with session_factory() as session:
         assert (await session.get(WorkerHeartbeat, "w-next")).next_collect_at is None
+
+
+async def test_stopped_heartbeats_removed_on_start(db_engine, session_factory) -> None:
+    """После деплоя у контейнеров новый hostname: строки остановленных уходят сразу,
+    а недавно замолчавшие остаются, чтобы монитор показал упавший воркер"""
+    from app.crawler.heartbeat import beat, cleanup_heartbeats
+
+    await beat(session_factory, "old-container:1", "stopped")
+    await beat(session_factory, "crashed:1", "running")
+    removed = await cleanup_heartbeats(session_factory)
+    assert removed == 1
+    assert set(await heartbeats(session_factory)) == {"crashed:1"}
+
+
+async def test_next_collect_refreshed_from_scheduler(db_engine, session_factory) -> None:
+    from types import SimpleNamespace
+
+    from app.worker.main import COLLECT_SCHEDULE_JOB
+
+    worker = make_worker(db_engine, session_factory, "w-refresh")
+    worker.next_collect = datetime(2026, 11, 9, 12, 3, tzinfo=UTC)
+    later = datetime(2026, 11, 10, 8, 3, tzinfo=UTC)
+    worker.scheduler = SimpleNamespace(
+        get_job=lambda job_id: (
+            SimpleNamespace(next_run_time=later) if job_id == COLLECT_SCHEDULE_JOB else None
+        )
+    )
+    await worker.heartbeat("idle")
+    async with session_factory() as session:
+        assert (await session.get(WorkerHeartbeat, "w-refresh")).next_collect_at == later

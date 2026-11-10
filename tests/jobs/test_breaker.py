@@ -82,3 +82,25 @@ async def test_neutral_changes_nothing(session_factory) -> None:
     await record(session_factory, p, Verdict.FAILURE)
     await record(session_factory, p, Verdict.NEUTRAL)
     assert await state(session_factory) == ("closed", 1)
+
+
+async def test_trip_with_until_opens_until_that_moment(session_factory) -> None:
+    """Квота сбрасывается раз в сутки: автомат открыт до сброса, а не на open_seconds"""
+    from datetime import UTC, datetime
+
+    from app.jobs.models import Breaker
+
+    reset = datetime.now(UTC) + timedelta(hours=5)
+    await record(session_factory, policy(), Verdict.TRIP, until=reset)
+    async with session_factory() as session:
+        breaker = await session.get(Breaker, "svc")
+    assert breaker.state == "open"
+    assert abs((breaker.opened_until - reset).total_seconds()) < 1
+    assert await gate(session_factory, policy()) == breaker.opened_until
+
+    # Короткий until не сокращает обычное время открытия
+    soon = datetime.now(UTC) + timedelta(seconds=5)
+    await record(session_factory, policy(), Verdict.TRIP, until=soon)
+    async with session_factory() as session:
+        breaker = await session.get(Breaker, "svc")
+    assert breaker.opened_until > soon + timedelta(seconds=500)

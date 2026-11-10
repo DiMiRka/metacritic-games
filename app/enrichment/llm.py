@@ -136,6 +136,14 @@ TRANSLATE_PROMPT = """\
 
 Верни JSON с одним полем text — перевод"""
 
+# Перед повтором, если модель вернула английский текст без изменений. На ключ перевода не
+# влияет: результат тот же перевод по тем же правилам
+TRANSLATE_RETRY_NOTE = (
+    "В прошлый раз ты вернул описание без перевода. Оно на английском, а не на русском: "
+    "переведи его на русский, даже если оно короткое или похоже на название. Названия игр, "
+    "студий и персонажей оставь как в оригинале, остальной текст переведи.\n\n"
+)
+
 TRANSLATE_SCHEMA = {
     "type": "object",
     "properties": {"text": {"type": "string"}},
@@ -277,13 +285,22 @@ class Measured:
         user = build_translate_prompt(game_title, description)
         result = await self.complete(TRANSLATE_PROMPT, user, TRANSLATE_SCHEMA, "translation")
         text = TranslatedText.model_validate_json(result.text).text.strip()
+        tokens_in, tokens_out = result.input_tokens or 0, result.output_tokens or 0
+        # Лёгкие модели на коротких описаниях возвращают исходник как есть, и повтор с тем же
+        # промптом не помогает. Сразу второй запрос с прямым указанием, что текст не русский
+        if text and _same_text(text, description) and not CYRILLIC.search(description):
+            retry = await self.complete(
+                TRANSLATE_PROMPT, TRANSLATE_RETRY_NOTE + user, TRANSLATE_SCHEMA, "translation"
+            )
+            text = TranslatedText.model_validate_json(retry.text).text.strip()
+            tokens_in += retry.input_tokens or 0
+            tokens_out += retry.output_tokens or 0
         if not text:
             raise SummaryError("пустой перевод")
-        # Лёгкие модели иногда возвращают исходник как есть. Если он не русский, это не
-        # перевод: повтор обычно проходит, а сохранять английский текст под видом русского нельзя
+        # Сохранять английский текст под видом русского нельзя
         if _same_text(text, description) and not CYRILLIC.search(description):
             raise UntranslatedError("модель вернула описание без перевода")
-        return Translation(text, result.input_tokens, result.output_tokens)
+        return Translation(text, tokens_in or None, tokens_out or None)
 
     async def conclude(self, game_title: str, video_title: str, transcript: str) -> Conclusion:
         user = build_letsplay_prompt(game_title, video_title, transcript)

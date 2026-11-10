@@ -51,9 +51,14 @@ async def beat(
 async def cleanup_heartbeats(
     session_factory: async_sessionmaker[AsyncSession], older_than: timedelta = timedelta(days=1)
 ) -> int:
-    """Строки экземпляров, которые давно не подавали признаков жизни"""
+    """Строки экземпляров, остановленных штатно (так уходят старые контейнеры при деплое: у
+    новых другой hostname), и тех, кто давно молчит. Недавно замолчавшие остаются: монитор
+    должен показывать, что воркер упал, а не прятать его"""
     async with session_factory() as session, session.begin():
         result = await session.execute(
-            delete(WorkerHeartbeat).where(WorkerHeartbeat.updated_at < func.now() - older_than)
+            delete(WorkerHeartbeat).where(
+                (WorkerHeartbeat.status == WorkerStatus.STOPPED)
+                | (WorkerHeartbeat.updated_at < func.now() - older_than)
+            )
         )
         return result.rowcount

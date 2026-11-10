@@ -223,3 +223,37 @@ async def test_job_logs_carry_context_and_dead_is_error(session_factory, log_rec
     assert dead["exception"] is not None
     after = REGISTRY.get_sample_value("jobs_finished_total", {"kind": "embed", "status": "dead"})
     assert after == before + 1
+
+
+async def test_deferred_error_waits_without_spending_attempt(session_factory) -> None:
+    """Суточная квота: задача ждёт сброса в очереди, попытка не тратится, run_items не пишется"""
+    from datetime import UTC, datetime, timedelta
+
+    from app.core.errors import DeferredError
+
+    [job_id] = await put(session_factory, 1)
+    until = datetime.now(UTC) + timedelta(hours=3)
+    finished: list[Finish] = []
+
+    async def handler(job):
+        raise DeferredError("квота исчерпана", until)
+
+    async def on_finish(session, job, finish):
+        finished.append(finish)
+
+    pool = make_pool(session_factory, handler, on_finish=on_finish)
+    async with running(pool):
+
+        async def deferred() -> bool:
+            async with session_factory() as s:
+                job = await s.get(Job, job_id)
+            # С запасом в часы: часы базы в Docker могут расходиться с часами теста
+            return job.status == "queued" and job.run_after > datetime.now(UTC) + timedelta(hours=2)
+
+        await wait_until(deferred)
+
+    async with session_factory() as s:
+        job = await s.get(Job, job_id)
+    assert (job.status, job.attempts, job.locked_by) == ("queued", 0, None)
+    assert abs((job.run_after - until).total_seconds()) < 1
+    assert finished == []

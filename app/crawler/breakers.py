@@ -8,6 +8,7 @@ import openai
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
+from app.core.errors import DeferredError
 from app.crawler.processor import ScrapeFormatError
 from app.jobs.breaker import BreakerPolicy, Verdict, gate, record
 from app.jobs.models import JobKind
@@ -124,4 +125,5 @@ class Breakers:
 
     async def outcome(self, job: ClaimedJob, error: BaseException | None) -> None:
         if policy := POLICY_BY_KIND.get(job.kind):
-            await record(self.session_factory, policy, policy.judge(error))
+            until = error.until if isinstance(error, DeferredError) else None
+            await record(self.session_factory, policy, policy.judge(error), until)

@@ -159,9 +159,10 @@ async def test_full_run(db_engine, session_factory) -> None:
     assert summaries == 2
     assert embedded == 2
     assert state.phase == "browse"
-    # Летсплеи ставятся по каждой сохранённой игре, но вне прохода: он закрылся без них
+    # Летсплеи ставятся вне прохода, он закрылся без них, и только для игр с Metascore:
+    # у starshapes оценки нет
     assert jobs == {
-        "collect": 1, "scrape_game": 3, "summarize": 2, "translate": 1, "embed": 2, "letsplay": 2,
+        "collect": 1, "scrape_game": 3, "summarize": 2, "translate": 1, "embed": 2, "letsplay": 1,
     }  # fmt: skip
 
 

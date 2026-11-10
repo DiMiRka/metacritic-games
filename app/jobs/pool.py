@@ -12,6 +12,7 @@ from loguru import logger
 from prometheus_client import Counter, Histogram
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.errors import DeferredError
 from app.core.logs import log_context
 from app.jobs.errors import classify
 from app.jobs.models import JobStatus
@@ -166,12 +167,29 @@ class JobPool:
             with contextlib.suppress(asyncio.CancelledError):
                 await renew
         duration_ms = int((time.monotonic() - started) * 1000)
-        await self._finish(job, result, error, duration_ms)
+        if isinstance(error, DeferredError):
+            await self._defer(job, error)
+        else:
+            await self._finish(job, result, error, duration_ms)
         if self.on_outcome:
             try:
                 await self.on_outcome(job, error)
             except Exception:
                 logger.exception("job {}: ошибка в on_outcome", job.id)
+
+    async def _defer(self, job: ClaimedJob, error: DeferredError) -> None:
+        """Назад в очередь до error.until без траты попытки и без строки в run_items"""
+        try:
+            async with self.session_factory() as session, session.begin():
+                if not await release(session, job.id, self.worker, run_after=error.until):
+                    logger.warning("job {}: аренду забрал другой воркер", job.id)
+                    return
+            JOBS_FINISHED.labels(job.kind, "deferred").inc()
+            logger.info(
+                "job {} {}: отложена до {:%Y-%m-%d %H:%M} UTC", job.id, job.kind, error.until
+            )
+        except Exception:
+            logger.exception("job {}: не удалось отложить", job.id)
 
     async def _finish(
         self, job: ClaimedJob, result: Any, error: Exception | None, duration_ms: int

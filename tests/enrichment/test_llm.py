@@ -264,3 +264,43 @@ async def test_untranslated_answer_is_retryable() -> None:
     russian = FakeCompletions('{"text": "Уже по-русски."}')
     same = OpenAICompatibleSummarizer("key", "gemini", client=openai_client(russian))
     assert (await same.translate("G", "Уже по-русски.")).text == "Уже по-русски."
+
+
+class SequenceCompletions(FakeCompletions):
+    """Отвечает по очереди заданными текстами"""
+
+    def __init__(self, *contents: str) -> None:
+        super().__init__(contents[0])
+        self.contents = list(contents)
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        self.response.choices[0].message.content = self.contents[len(self.calls) - 1]
+        return self.response
+
+
+async def test_untranslated_answer_retried_with_note() -> None:
+    """Лёгкая модель вернула оригинал: сразу второй запрос с прямым указанием перевести"""
+    from app.enrichment.llm import TRANSLATE_RETRY_NOTE
+
+    source = "Wheel be fine."
+    completions = SequenceCompletions('{"text": "Wheel be fine."}', '{"text": "Всё будет хорошо."}')
+    summarizer = OpenAICompatibleSummarizer("key", "gemini", client=openai_client(completions))
+
+    result = await summarizer.translate("Wheel Be Fine", source)
+
+    assert result.text == "Всё будет хорошо."
+    assert len(completions.calls) == 2
+    assert completions.calls[1]["messages"][1]["content"].startswith(TRANSLATE_RETRY_NOTE)
+    assert result.input_tokens == 1800 and result.output_tokens == 120
+
+
+async def test_untranslated_twice_still_fails() -> None:
+    from app.enrichment.llm import UntranslatedError
+
+    completions = SequenceCompletions('{"text": "Lemons."}', '{"text": "Lemons."}')
+    summarizer = OpenAICompatibleSummarizer("key", "gemini", client=openai_client(completions))
+    with pytest.raises(UntranslatedError):
+        await summarizer.translate("G", "Lemons.")
+    assert len(completions.calls) == 2

@@ -94,6 +94,7 @@ class Worker:
         self.pools = build_pools(stages.job_types(), session_factory, worker_id, **kwargs)
         self.stop = asyncio.Event()
         self.next_collect: datetime | None = None
+        self.scheduler: AsyncIOScheduler | None = None
 
     def wake_all(self, _payload: str = "") -> None:
         for pool in self.pools:
@@ -107,6 +108,9 @@ class Worker:
         if status is None:
             status = "running" if held else "idle"
         task = ", ".join(held) if held else None
+        # После каждого прохода планировщик сдвигает время, берём его заново на каждом сигнале
+        if self.scheduler and (job := self.scheduler.get_job(COLLECT_SCHEDULE_JOB)):
+            self.next_collect = job.next_run_time
         # Время отдельным полем: страница покажет его в часовом поясе пользователя
         next_collect = self.next_collect if status != "stopped" else None
         await beat(self.session_factory, self.worker_id, status, task, next_collect)
@@ -162,6 +166,7 @@ class Worker:
             )
         scheduler.add_job(self.heartbeat, "interval", seconds=HEARTBEAT_SECONDS)
         scheduler.start()
+        self.scheduler = scheduler
         if job := scheduler.get_job(COLLECT_SCHEDULE_JOB):
             self.next_collect = job.next_run_time
 

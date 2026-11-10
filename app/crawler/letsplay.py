@@ -8,7 +8,11 @@ letsplay_conclude (автомат llm): заключение по сохранё
 повторяется только этот шаг, без скачивания звука и Whisper.
 
 Задача letsplay ставится после сохранения игры, если летсплея ещё нет, прошлая попытка не
-удалась больше суток назад или с последнего поиска прошло LETSPLAY_REFRESH_DAYS
+удалась больше суток назад или с последнего поиска прошло LETSPLAY_REFRESH_DAYS.
+
+Квоты YouTube Data API хватает примерно на 100 поисков в сутки, а обход приносит до 480 игр.
+Поэтому летсплей ищется только для игр с Metascore, и очередь разбирается по убыванию оценки.
+У нишевых новинок без оценок летсплеев обычно нет, поиск по ним тратил бы квоту впустую
 """
 
 from dataclasses import dataclass
@@ -20,7 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.catalog.models import Game, Letsplay, LetsplayStatus
+from app.catalog.models import Game, GamePlatform, Letsplay, LetsplayStatus
 from app.core.config import settings
 from app.core.errors import PermanentError
 from app.enrichment.llm import LETSPLAY_PROMPT_VERSION, Summarizer
@@ -40,6 +44,13 @@ RETRY_AFTER = timedelta(days=1)
 class LetsplayResult:
     game_id: int
     changed: bool
+
+
+async def best_metascore(session: AsyncSession, game_id: int) -> int | None:
+    """Лучший Metascore игры по платформам: по нему решается, искать ли летсплей и когда"""
+    return await session.scalar(
+        select(func.max(GamePlatform.metascore)).where(GamePlatform.game_id == game_id)
+    )
 
 
 async def letsplay_due(session: AsyncSession, game_id: int, *, refresh_days: int) -> bool:
