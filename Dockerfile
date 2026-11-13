@@ -50,7 +50,7 @@ CMD ["uvicorn", "app.web.app:create_app", "--factory", "--host", "0.0.0.0", "--p
 # rclone собирается из исходников: официальный образ может отставать по версии Go,
 # а исправления crypto/x509 и crypto/tls важны для выгрузки по TLS. Версия Go обновляется
 # вместе с образом golang (Dependabot), версия rclone — в RCLONE_VERSION
-FROM golang:1.27.3-alpine3.24@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS rclone-build
+FROM golang:1.27.4-alpine3.24@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS rclone-build
 ARG RCLONE_VERSION=v1.76.0
 RUN CGO_ENABLED=0 go install -trimpath \
         -ldflags "-s -w -X github.com/rclone/rclone/fs.Version=${RCLONE_VERSION}" \
