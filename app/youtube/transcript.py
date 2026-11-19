@@ -13,13 +13,14 @@ import os
 import re
 import tempfile
 import threading
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from loguru import logger
 from prometheus_client import Counter
 
-from app.youtube.errors import NoSpeechError, translate_ytdlp_error
+from app.youtube.errors import NoAudioFormatsError, NoSpeechError, translate_ytdlp_error
 
 TranscriptSource = Literal["captions", "whisper"]
 TRANSCRIPTS = Counter(
@@ -37,6 +38,26 @@ HALLUCINATIONS = (
     "субтитры сделал",
     "субтитры создавал",
 )
+
+
+class YtdlpLog:
+    """Предупреждения yt-dlp в наш лог и в текст ошибки: в них настоящая причина, когда
+    YouTube не отдал форматы (не решён JS-челлендж, нужен PO-токен, проверка на бота)"""
+
+    def __init__(self) -> None:
+        self.warnings: deque[str] = deque(maxlen=3)
+
+    def debug(self, msg: str) -> None:
+        pass
+
+    info = debug
+
+    def warning(self, msg: str) -> None:
+        self.warnings.append(msg)
+        logger.warning("yt-dlp: {}", msg)
+
+    def error(self, msg: str) -> None:
+        logger.error("yt-dlp: {}", msg)
 
 
 @dataclass(frozen=True)
@@ -168,15 +189,24 @@ class TranscriptFetcher:
             text = json3_text(json.loads(response.read()))
         return Transcript(text, language, "captions") if len(text) >= MIN_TRANSCRIPT_CHARS else None
 
-    def _audio_prefix(self, ydl, info: dict[str, Any], path: str) -> None:
+    def _audio_prefix(self, ydl, info: dict[str, Any], path: str, log: YtdlpLog) -> None:
         from yt_dlp.networking.common import Request
 
+        formats = info.get("formats") or []
         audio = [
             f
-            for f in info.get("formats") or []
+            for f in formats
             if f.get("vcodec") == "none" and f.get("ext") == "m4a" and f.get("url")
         ]
         if not audio:
+            # Без аудио и видео у ролика остаются только раскадровки mhtml: это отказ YouTube,
+            # а не особенность ролика, поэтому ошибка повторяемая и с причиной от yt-dlp
+            if not any(f.get("acodec") not in (None, "none") for f in formats):
+                raise NoAudioFormatsError(
+                    "YouTube не отдал ни одной аудиодорожки: " + " | ".join(log.warnings)
+                    if log.warnings
+                    else "YouTube не отдал ни одной аудиодорожки"
+                )
             raise NoSpeechError("у ролика нет аудиодорожки m4a")
         # При автодубляже дорожек много: исходную yt-dlp помечает высшим language_preference
         best = max(f.get("language_preference") or -1 for f in audio)
@@ -189,11 +219,11 @@ class TranscriptFetcher:
             while chunk := response.read(1 << 16):
                 out.write(chunk)
 
-    def _whisper(self, ydl, info: dict[str, Any]) -> Transcript | None:
+    def _whisper(self, ydl, info: dict[str, Any], log: YtdlpLog) -> Transcript | None:
         fd, path = tempfile.mkstemp(suffix=".m4a")
         os.close(fd)
         try:
-            self._audio_prefix(ydl, info, path)
+            self._audio_prefix(ydl, info, path, log)
             text, language = self.whisper.transcribe(path, self.max_audio_minutes * 60)
         finally:
             os.unlink(path)
@@ -202,14 +232,17 @@ class TranscriptFetcher:
     def _fetch_sync(self, url: str) -> Transcript:
         import yt_dlp
 
-        with yt_dlp.YoutubeDL({**self.options, "skip_download": True}) as ydl:
+        log = YtdlpLog()
+        # ignore_no_formats_error: без форматов ролика субтитры всё равно доступны
+        options = {**self.options, "skip_download": True, "ignore_no_formats_error": True}
+        with yt_dlp.YoutubeDL({**options, "logger": log}) as ydl:
             info = self._info(ydl, url)
             transcript = None
             if self.mode in ("auto", "captions"):
                 transcript = self._captions(ydl, info)
             if transcript is None and self.mode in ("auto", "whisper"):
                 logger.info("субтитров нет, распознаю речь Whisper: {}", url)
-                transcript = self._whisper(ydl, info)
+                transcript = self._whisper(ydl, info, log)
         if transcript is None:
             raise NoSpeechError("ни субтитров, ни распознаваемой речи в начале ролика")
         TRANSCRIPTS.labels(transcript.source).inc()

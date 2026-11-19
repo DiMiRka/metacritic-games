@@ -37,7 +37,8 @@ class YouTubeLetsplays:
     def __init__(self, config: Settings) -> None:
         self.api_key = config.youtube_api_key
         self.min_duration = config.letsplay_min_duration_minutes * 60
-        options = {"quiet": True, "no_warnings": True, "noprogress": True}
+        # Предупреждения не глушатся: их забирает YtdlpLog
+        options = {"quiet": True, "noprogress": True}
         if config.youtube_cookies_file:
             # Cookies аккаунта помогают, когда YouTube просит подтвердить, что запрос не от бота
             options["cookiefile"] = writable_copy(config.youtube_cookies_file)

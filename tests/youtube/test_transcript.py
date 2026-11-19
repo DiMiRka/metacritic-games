@@ -1,6 +1,15 @@
 from types import SimpleNamespace
 
-from app.youtube.transcript import join_segments, json3_text, pick_caption_track
+import pytest
+
+from app.youtube.errors import NoAudioFormatsError, NoSpeechError
+from app.youtube.transcript import (
+    TranscriptFetcher,
+    YtdlpLog,
+    join_segments,
+    json3_text,
+    pick_caption_track,
+)
 
 
 def track(url):
@@ -69,3 +78,32 @@ def test_auto_dubbed_video_uses_original_language_track() -> None:
     assert pick_caption_track(dubbed) == ("en", "en")
     assert pick_caption_track(single) == ("ja", "ja")
     assert pick_caption_track(ambiguous) is None
+
+
+def fetcher() -> TranscriptFetcher:
+    return TranscriptFetcher({}, whisper=None, mode="auto", max_audio_minutes=10)
+
+
+def test_only_storyboards_is_youtube_refusal_with_ytdlp_reason(tmp_path) -> None:
+    log = YtdlpLog()
+    log.warning("[youtube] n challenge solving failed: Some formats may be missing")
+    info = {"formats": [{"format_id": "sb0", "ext": "mhtml", "vcodec": "none", "acodec": "none"}]}
+
+    with pytest.raises(NoAudioFormatsError, match="n challenge solving failed"):
+        fetcher()._audio_prefix(None, info, str(tmp_path / "a.m4a"), log)
+    with pytest.raises(NoAudioFormatsError, match=r"ни одной аудиодорожки$"):
+        fetcher()._audio_prefix(None, {}, str(tmp_path / "a.m4a"), YtdlpLog())
+
+
+def test_audio_without_m4a_is_video_specific(tmp_path) -> None:
+    info = {"formats": [{"ext": "webm", "vcodec": "none", "acodec": "opus", "url": "u"}]}
+    with pytest.raises(NoSpeechError):
+        fetcher()._audio_prefix(None, info, str(tmp_path / "a.m4a"), YtdlpLog())
+
+
+def test_ytdlp_log_keeps_last_warnings() -> None:
+    log = YtdlpLog()
+    for i in range(5):
+        log.warning(f"w{i}")
+    log.debug("noise")
+    assert list(log.warnings) == ["w2", "w3", "w4"]

@@ -299,7 +299,10 @@ POST /api/v1/runs ──────┴─► collect ─► scrape_game ×20 �
 
 **yt-dlp устаревает быстро.** Он отвечает только за субтитры и звук, но YouTube регулярно ломает его старые версии.
 
-- Workflow `.github/workflows/yt-dlp.yml` каждый день обновляет в `uv.lock` только yt-dlp и открывает пул-реквест. Еженедельный Dependabot yt-dlp пропускает. Пул-реквест от `GITHUB_TOKEN` не запускает CI. Чтобы проверки шли сами, нужен секрет `DEPS_PR_TOKEN`: fine-grained токен с правами contents и pull requests.
+- Для YouTube yt-dlp нужен JS-движок: без него YouTube не отдаёт форматы, и каждый ролик падал с `Requested format is not available`. Зависимость `yt-dlp[default,deno]` ставит в образ воркера Deno и скрипты `yt-dlp-ejs`, кэш Deno лежит в `/tmp/deno`.
+- Предупреждения yt-dlp пишутся в лог воркера. Если YouTube не отдал ни одной аудиодорожки, задача падает с `NoAudioFormatsError` и последними предупреждениями yt-dlp: там видно, что не так (челлендж, PO-токен, проверка на бота). Субтитры при этом всё равно забираются.
+
+- Workflow `.github/workflows/yt-dlp.yml` каждый день обновляет в `uv.lock` только yt-dlp, yt-dlp-ejs и Deno и открывает пул-реквест. Еженедельный Dependabot yt-dlp пропускает. Пул-реквест от `GITHUB_TOKEN` не запускает CI. Чтобы проверки шли сами, нужен секрет `DEPS_PR_TOKEN`: fine-grained токен с правами contents и pull requests.
 - Тревога `LetsplayTranscriptsStalled` срабатывает, если за 12 часов задачи летсплеев падали или повторялись не меньше 5 раз, а ни одной расшифровки не было.
 
 **Cookies аккаунта Google.** Если YouTube требует подтвердить, что запрос не от бота, помогают cookies аккаунта. Файл cookies — это полный доступ к аккаунту, поэтому:

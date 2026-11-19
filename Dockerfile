@@ -68,5 +68,7 @@ ENTRYPOINT ["sh", "/usr/local/bin/offsite.sh"]
 
 FROM app AS worker
 COPY --from=deps-worker /opt/venv /opt/venv
+# Deno для yt-dlp кэширует в DENO_DIR, а файловая система контейнера read-only, писать можно в /tmp
+ENV DENO_DIR=/tmp/deno
 USER appuser
 CMD ["python", "-m", "app", "worker"]

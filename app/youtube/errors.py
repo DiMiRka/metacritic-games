@@ -34,6 +34,11 @@ class YouTubeApiError(RetryableError):
         self.status = status
 
 
+class NoAudioFormatsError(RetryableError):
+    """YouTube отдал ролик без аудио и видео. Так бывает со всеми роликами сразу: нет
+    JS-движка для yt-dlp, нужен PO-токен или cookies, поэтому задача повторяется"""
+
+
 class VideoUnavailableError(PermanentError):
     pass
 

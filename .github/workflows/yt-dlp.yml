@@ -23,7 +23,7 @@ jobs:
         run: |
           current() { uv export --frozen --no-hashes --extra worker --no-emit-project | grep -i '^yt-dlp==' | cut -d= -f3; }
           before=$(current)
-          uv lock --upgrade-package yt-dlp
+          uv lock --upgrade-package yt-dlp --upgrade-package yt-dlp-ejs --upgrade-package deno
           after=$(current)
           echo "before=$before" >> "$GITHUB_OUTPUT"
           echo "after=$after" >> "$GITHUB_OUTPUT"

@@ -32,7 +32,8 @@ worker = [
     "anthropic>=2.5",
     "openai>=3.40",
     "fastembed>=0.9",
-    "yt-dlp>=2026.10.26",
+    # default тянет yt-dlp-ejs, deno — JS-движок: без них YouTube не отдаёт форматы
+    "yt-dlp[default,deno]>=2026.10.26",
     "faster-whisper>=1.2",
     # faster-whisper 1.2 не работает с PyAV 16: open() больше не принимает metadata_errors
     "av>=14,<16",
