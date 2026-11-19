@@ -58,6 +58,22 @@ def page_url(filters: GameFilters, page: int) -> str:
     return f"/?{query}" if query else "/"
 
 
+def pager_pages(page: int, pages: int, around: int = 2) -> list[int | None]:
+    """Номера для пагинации: первая, последняя и окно вокруг текущей, None — пропуск.
+    Пропуск из одной страницы не ставится: вместо «…» сразу её номер"""
+    shown = {1, pages, *range(max(page - around, 1), min(page + around, pages) + 1)}
+    result: list[int | None] = []
+    previous = 0
+    for number in sorted(shown):
+        if number - previous == 2:
+            result.append(number - 1)
+        elif number - previous > 2:
+            result.append(None)
+        result.append(number)
+        previous = number
+    return result
+
+
 @router.get("/health")
 async def health(session: Session) -> JSONResponse:
     """Готовность: процесс жив и база отвечает. По нему healthcheck в compose и Caddy"""
@@ -78,6 +94,14 @@ async def index(request: Request, session: Session, filters: Filters) -> HTMLRes
         "sort_labels": SORT_LABELS,
         "prev_url": page_url(filters, result.page - 1) if result.page > 1 else None,
         "next_url": page_url(filters, result.page + 1) if result.page < result.pages else None,
+        # Широкий экран: по две страницы вокруг текущей, узкий: по одной
+        "pager": {
+            size: [
+                (n, page_url(filters, n) if n else None)
+                for n in pager_pages(result.page, result.pages, around)
+            ]
+            for size, around in (("wide", 2), ("narrow", 1))
+        },
     }
     partial = request.headers.get("HX-Request") and not request.headers.get(
         "HX-History-Restore-Request"

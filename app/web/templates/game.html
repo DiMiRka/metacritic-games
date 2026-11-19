@@ -4,7 +4,7 @@
 {% block title %}{{ game.title }} — Игры Metacritic{% endblock %}
 
 {% block content %}
-<a class="back" href="/">← Все игры</a>
+<a class="back" href="/" data-catalog-back>← Все игры</a>
 
 {% set metascores = platforms | selectattr("metascore", "ne", none) | map(attribute="metascore") | list %}
 {% set userscores = platforms | selectattr("userscore", "ne", none) | map(attribute="userscore") | list %}

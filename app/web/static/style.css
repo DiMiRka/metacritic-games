@@ -353,13 +353,40 @@ input, select, textarea, button { font: inherit; }
 
 .pager {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 12px;
   margin: 28px 0;
   color: var(--muted);
 }
-.pager > :last-child { justify-self: end; }
+/* Одинаковая ширина «Назад» и «Дальше», пустая ячейка держит место на краях */
+.pager__step { min-width: 132px; text-align: center; }
+.pager__pages {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pager__page, .pager__gap {
+  display: grid;
+  place-items: center;
+  min-width: 36px;
+  height: 36px;
+  padding: 0 6px;
+  font: 14px/1 var(--font-hud);
+}
+.pager__page {
+  color: var(--text);
+  border: 1px solid var(--line);
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+}
+a.pager__page:hover { color: var(--accent); border-color: var(--accent); text-decoration: none; }
+a.pager__page:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
+.pager__page--current { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+.pager__pages--narrow { display: none; }
 
 .empty { text-align: center; padding: 60px 0; }
 
@@ -499,4 +526,9 @@ input, select, textarea, button { font: inherit; }
   .opinions, .monitor-grid { grid-template-columns: 1fr; }
   .score--lg .score__value { font-size: 26px; }
   .signal__code { font-size: 72px; }
+  .pager { grid-template-columns: 1fr 1fr; }
+  .pager__pages { grid-column: 1 / -1; grid-row: 1; }
+  .pager__step { min-width: 0; }
+  .pager__pages--wide { display: none; }
+  .pager__pages--narrow { display: flex; }
 }

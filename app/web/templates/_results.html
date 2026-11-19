@@ -26,9 +26,21 @@
 </ul>
 
 {% if result.pages > 1 %}
-<nav class="pager" hx-target="#results" hx-push-url="true">
-  {% if prev_url %}<a class="button button--secondary" href="{{ prev_url }}" hx-get="{{ prev_url }}">← Назад</a>{% else %}<span></span>{% endif %}
-  <span>Страница {{ result.page }} из {{ result.pages }}</span>
-  {% if next_url %}<a class="button button--secondary" href="{{ next_url }}" hx-get="{{ next_url }}">Дальше →</a>{% else %}<span></span>{% endif %}
+<nav class="pager" aria-label="Страницы" hx-target="#results" hx-push-url="true">
+  {% if prev_url %}<a class="button button--secondary pager__step" href="{{ prev_url }}" hx-get="{{ prev_url }}" rel="prev">← Назад</a>{% else %}<span class="pager__step" aria-hidden="true"></span>{% endif %}
+  {% for size, numbers in pager.items() %}
+  <ol class="pager__pages pager__pages--{{ size }}">
+    {% for number, url in numbers %}
+      {% if number is none %}
+        <li class="pager__gap" aria-hidden="true">…</li>
+      {% elif number == result.page %}
+        <li><span class="pager__page pager__page--current" aria-current="page">{{ number }}</span></li>
+      {% else %}
+        <li><a class="pager__page" href="{{ url }}" hx-get="{{ url }}" aria-label="Страница {{ number }}">{{ number }}</a></li>
+      {% endif %}
+    {% endfor %}
+  </ol>
+  {% endfor %}
+  {% if next_url %}<a class="button button--secondary pager__step" href="{{ next_url }}" hx-get="{{ next_url }}" rel="next">Дальше →</a>{% else %}<span class="pager__step" aria-hidden="true"></span>{% endif %}
 </nav>
 {% endif %}

@@ -272,3 +272,46 @@ async def test_game_page_shows_translation_with_original(client, session_factory
         "Dark fantasy <b>world</b>",
         "Мрачное фэнтези",
     )
+
+
+@pytest.mark.parametrize(
+    ("page", "pages", "expected"),
+    [
+        (1, 1, [1]),
+        (5, 20, [1, 2, 3, 4, 5, 6, 7, None, 20]),
+        (1, 5, [1, 2, 3, 4, 5]),
+        (1, 20, [1, 2, 3, None, 20]),
+        (10, 20, [1, None, 8, 9, 10, 11, 12, None, 20]),
+        (20, 20, [1, None, 18, 19, 20]),
+    ],
+)
+def test_pager_pages(page, pages, expected) -> None:
+    from app.web.routes.public import pager_pages
+
+    assert pager_pages(page, pages) == expected
+
+
+def test_pager_pages_narrow_marks_every_gap() -> None:
+    from app.web.routes.public import pager_pages
+
+    assert pager_pages(5, 20, around=1) == [1, None, 4, 5, 6, None, 20]
+    assert pager_pages(3, 20, around=1) == [1, 2, 3, 4, None, 20]
+
+
+async def test_pager_links_keep_filters(client, monkeypatch) -> None:
+    monkeypatch.setattr(queries, "PAGE_SIZE", 1)
+    page = (await client.get("/", params={"sort": "date", "page": 2})).text
+
+    assert '<span class="pager__page pager__page--current" aria-current="page">2</span>' in page
+    assert 'href="/?sort=date" hx-get="/?sort=date" aria-label="Страница 1"' in page
+    assert (
+        'href="/?sort=date&amp;page=4" hx-get="/?sort=date&amp;page=4" aria-label="Страница 4"'
+        in page
+    )
+    assert 'rel="prev"' in page and 'rel="next"' in page
+
+
+async def test_game_page_back_link_is_catalog(client) -> None:
+    page = (await client.get("/games/elden-ring")).text
+    assert '<a class="back" href="/" data-catalog-back>' in page
+    assert "/static/back.js" in page
