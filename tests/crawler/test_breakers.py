@@ -143,8 +143,11 @@ async def test_llm_breaker_does_not_block_scrape_and_embed(db_engine, session_fa
         by_kind = {}
         for job in jobs:
             by_kind.setdefault(job.kind, []).append(job.status)
+        # Автомат пишется отдельной транзакцией после итога задачи, его ждём тоже
         return (
-            by_kind.get("scrape_game") == ["done"]
+            "llm" in breakers
+            and breakers["llm"].state == "open"
+            and by_kind.get("scrape_game") == ["done"]
             and by_kind.get("embed") == ["done"]
             and sorted(by_kind.get("summarize", [])) == ["dead", "queued"]
         )
