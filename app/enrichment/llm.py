@@ -78,7 +78,8 @@ class SummaryError(PermanentError):
 
 
 class UntranslatedError(RetryableError):
-    """Модель вернула текст без перевода"""
+    """Модель вернула текст без перевода. Этап translate ловит её и запоминает отказ:
+    повтор того же текста той же моделью не помогает"""
 
 
 CYRILLIC = re.compile("[а-яё]", re.IGNORECASE)

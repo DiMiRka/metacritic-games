@@ -5,7 +5,9 @@ from sqlalchemy import select, update
 from app.catalog.models import Game
 from app.core.clock import now_tz
 from app.crawler import stages as stages_module
+from app.enrichment.llm import UntranslatedError
 from app.enrichment.translation import save_translation, translation_key
+from app.jobs.models import Job
 from tests.conftest import FakeClient, FakeSummarizer
 from tests.crawler.test_pipeline import GAMES, items, run_pipeline
 
@@ -66,3 +68,31 @@ async def test_llm_failure_keeps_game(db_engine, session_factory, monkeypatch) -
     await run_pipeline(db_engine, session_factory, client, FakeSummarizer(fail=True))
     saved = await game(session_factory)
     assert saved.description and saved.description_ru is None
+
+
+class StubbornSummarizer(FakeSummarizer):
+    async def translate(self, game_title: str, description: str):
+        self.translations.append(game_title)
+        raise UntranslatedError("модель вернула описание без перевода")
+
+
+async def test_untranslated_description_is_remembered(
+    db_engine, session_factory, monkeypatch
+) -> None:
+    client = FakeClient(new_releases=["elden-ring"], games=GAMES)
+    summarizer = StubbornSummarizer()
+    run_id = await run_pipeline(db_engine, session_factory, client, summarizer)
+
+    saved = await game(session_factory)
+    assert saved.description_ru is None
+    assert saved.description_ru_key == translation_key(saved.description, "fake-model")
+    assert ("elden-ring", "translate", "skipped") in await items(session_factory, run_id)
+    async with session_factory() as session:
+        statuses = (await session.scalars(select(Job.status).where(Job.kind == "translate"))).all()
+    assert statuses == ["done"]
+
+    # Следующий обход того же описания той же моделью перевод не повторяет
+    later = now_tz() + timedelta(days=1)
+    monkeypatch.setattr(stages_module, "now_tz", lambda: later)
+    await run_pipeline(db_engine, session_factory, client, summarizer)
+    assert translations(summarizer) == 1

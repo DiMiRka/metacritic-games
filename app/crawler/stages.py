@@ -34,7 +34,7 @@ from app.crawler.processor import (
 from app.crawler.raw import RawBundle, latest_hash, save_raw
 from app.crawler.runs import ItemInfo, create_run, done_today, fail_run, finalize_run, record_item
 from app.enrichment.embeddings import Embedder, embedding_outdated, embedding_text, text_hash
-from app.enrichment.llm import Summarizer
+from app.enrichment.llm import Summarizer, UntranslatedError
 from app.enrichment.summaries import summary_outdated, update_summary
 from app.enrichment.translation import save_translation, translation_outdated
 from app.jobs.models import Job, JobKind
@@ -351,12 +351,16 @@ class CrawlStages:
             outdated = await translation_outdated(session, game_id, self.summarizer.model)
         if not source or not outdated:
             return StageResult(game_id, False)
-        translation = await self.summarizer.translate(title, source)
+        try:
+            text = (await self.summarizer.translate(title, source)).text
+        except UntranslatedError:
+            # Название вместо описания или упрямая модель: повторы с тем же текстом
+            # не помогают, а тратят запросы при каждом обходе игры
+            logger.warning("игра {}: описание осталось без перевода, запоминаю", game_id)
+            text = None
         async with self.session_factory() as session, session.begin():
-            saved = await save_translation(
-                session, game_id, source, translation.text, self.summarizer.model
-            )
-        return StageResult(game_id, saved)
+            saved = await save_translation(session, game_id, source, text, self.summarizer.model)
+        return StageResult(game_id, saved and text is not None)
 
     async def _translate_finished(self, session: AsyncSession, job: ClaimedJob, finish: Finish):
         changed = finish.result.changed if finish.result else False

@@ -106,4 +106,5 @@ def test_ytdlp_log_keeps_last_warnings() -> None:
     for i in range(5):
         log.warning(f"w{i}")
     log.debug("noise")
+    log.warning("ffmpeg not found. The downloaded format may not be the best available")
     assert list(log.warnings) == ["w2", "w3", "w4"]

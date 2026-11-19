@@ -31,9 +31,11 @@ async def translation_outdated(session: AsyncSession, game_id: int, model: str) 
 
 
 async def save_translation(
-    session: AsyncSession, game_id: int, source: str, text: str, model: str
+    session: AsyncSession, game_id: int, source: str, text: str | None, model: str
 ) -> bool:
-    """Сохраняет перевод, только если описание не поменялось, пока шёл запрос к LLM"""
+    """Сохраняет перевод, только если описание не поменялось, пока шёл запрос к LLM.
+    text None — модель не перевела описание: ключ запоминается, и до смены описания или
+    модели перевод не повторяется, на странице остаётся оригинал"""
     result = await session.execute(
         update(Game)
         .where(Game.id == game_id, Game.description == source)

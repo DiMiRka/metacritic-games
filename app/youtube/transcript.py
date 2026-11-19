@@ -53,6 +53,9 @@ class YtdlpLog:
     info = debug
 
     def warning(self, msg: str) -> None:
+        # ffmpeg не нужен: аудио берётся запросом с Range, без склейки дорожек
+        if "ffmpeg not found" in msg:
+            return
         self.warnings.append(msg)
         logger.warning("yt-dlp: {}", msg)
 
