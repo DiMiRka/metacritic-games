@@ -1,3 +1,4 @@
+import io
 from types import SimpleNamespace
 
 import pytest
@@ -99,6 +100,60 @@ def test_audio_without_m4a_is_video_specific(tmp_path) -> None:
     info = {"formats": [{"ext": "webm", "vcodec": "none", "acodec": "opus", "url": "u"}]}
     with pytest.raises(NoSpeechError):
         fetcher()._audio_prefix(None, info, str(tmp_path / "a.m4a"), YtdlpLog())
+
+
+class RangeServer:
+    """Отдаёт файл по заголовку Range, на запросе номер fail_on обрывает соединение"""
+
+    def __init__(self, data: bytes, fail_on: int | None = None) -> None:
+        self.data = data
+        self.fail_on = fail_on
+        self.ranges: list[str] = []
+
+    def urlopen(self, request):
+        from yt_dlp.networking.exceptions import TransportError
+
+        rng = request.headers["Range"]
+        self.ranges.append(rng)
+        if len(self.ranges) == self.fail_on:
+            raise TransportError("Read timed out.")
+        start, end = map(int, rng.removeprefix("bytes=").split("-"))
+        return io.BytesIO(self.data[start : end + 1])
+
+
+def audio_info(size: int) -> dict:
+    # abr 0.008 — байт в секунду: предел 10 минут * 60 * 1.2 = 720 байт, минимум 180
+    fmt = {"ext": "m4a", "vcodec": "none", "acodec": "mp4a", "url": "u", "abr": 0.008,
+           "filesize": size, "downloader_options": {"http_chunk_size": 100}}  # fmt: skip
+    return {"formats": [fmt]}
+
+
+def test_audio_is_fetched_in_chunks_up_to_limit(tmp_path) -> None:
+    data = bytes(range(256)) * 4
+    path = tmp_path / "a.m4a"
+    short = RangeServer(data[:250])
+    fetcher()._audio_prefix(short, audio_info(250), str(path), YtdlpLog())
+    assert short.ranges == ["bytes=0-99", "bytes=100-199", "bytes=200-249"]
+    assert path.read_bytes() == data[:250]
+
+    long = RangeServer(data)
+    fetcher()._audio_prefix(long, audio_info(len(data)), str(path), YtdlpLog())
+    assert long.ranges[-1] == "bytes=700-719"
+    assert path.read_bytes() == data[:720]
+
+
+def test_broken_download_keeps_prefix_if_long_enough(tmp_path) -> None:
+    from yt_dlp.networking.exceptions import TransportError
+
+    path = tmp_path / "a.m4a"
+    fetcher()._audio_prefix(
+        RangeServer(bytes(1000), fail_on=3), audio_info(1000), str(path), YtdlpLog()
+    )
+    assert path.stat().st_size == 200
+    with pytest.raises(TransportError):
+        fetcher()._audio_prefix(
+            RangeServer(bytes(1000), fail_on=2), audio_info(1000), str(path), YtdlpLog()
+        )
 
 
 def test_ytdlp_log_keeps_last_warnings() -> None:

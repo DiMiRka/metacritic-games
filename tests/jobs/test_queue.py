@@ -165,6 +165,18 @@ async def test_retry_dead_resets_attempts(session_factory) -> None:
     assert (stored.status, stored.attempts) == ("queued", 0)
 
 
+async def test_retry_dead_with_active_duplicate_cancels_it(session_factory) -> None:
+    dead_id = await put(session_factory, dedupe_key="embed:1")
+    [claimed] = await take(session_factory)
+    async with session_factory() as s, s.begin():
+        await fail(s, claimed, W1, "x", retryable=False)
+    active_id = await put(session_factory, dedupe_key="embed:1")
+    async with session_factory() as s, s.begin():
+        assert await retry_dead(s, dead_id) is True
+    assert (await job(session_factory, dead_id)).status == "cancelled"
+    assert (await job(session_factory, active_id)).status == "queued"
+
+
 async def test_enqueue_sends_notify(session_factory, db_engine) -> None:
     import asyncpg
 

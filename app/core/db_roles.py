@@ -108,6 +108,17 @@ CREATE OR REPLACE FUNCTION retry_dead_job(p_job_id bigint) RETURNS boolean
 DECLARE
     changed integer;
 BEGIN
+    -- Та же работа уже в очереди или идёт: повтор не нужен, а UPDATE нарушил бы
+    -- уникальность dedupe_key, поэтому dead-задача просто уходит из списка
+    UPDATE jobs d SET status = 'cancelled'
+    WHERE d.id = p_job_id AND d.status = 'dead' AND EXISTS (
+        SELECT 1 FROM jobs a
+        WHERE a.dedupe_key = d.dedupe_key AND a.status IN ('queued', 'running')
+    );
+    GET DIAGNOSTICS changed = ROW_COUNT;
+    IF changed > 0 THEN
+        RETURN true;
+    END IF;
     UPDATE jobs SET status = 'queued', attempts = 0, run_after = now(), finished_at = NULL
     WHERE id = p_job_id AND status = 'dead';
     GET DIAGNOSTICS changed = ROW_COUNT;

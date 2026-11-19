@@ -27,6 +27,9 @@ TRANSCRIPTS = Counter(
     "letsplay_transcripts_total", "Расшифровки летсплеев по источнику", ["source"]
 )
 MIN_TRANSCRIPT_CHARS = 200
+CHUNK_BYTES = 10 << 20
+# Столько аудио хватает, чтобы распознать речь, если загрузка оборвалась
+MIN_AUDIO_SECONDS = 180
 # Фразы, которые Whisper выдумывает на тишине и музыке
 HALLUCINATIONS = (
     "thanks for watching",
@@ -194,6 +197,7 @@ class TranscriptFetcher:
 
     def _audio_prefix(self, ydl, info: dict[str, Any], path: str, log: YtdlpLog) -> None:
         from yt_dlp.networking.common import Request
+        from yt_dlp.networking.exceptions import TransportError
 
         formats = info.get("formats") or []
         audio = [
@@ -215,12 +219,32 @@ class TranscriptFetcher:
         best = max(f.get("language_preference") or -1 for f in audio)
         original = [f for f in audio if (f.get("language_preference") or -1) == best]
         fmt = min(original, key=lambda f: f.get("abr") or 1000)
+        bytes_per_second = (fmt.get("abr") or 128) * 1000 / 8
         # Запас 20% на заголовки и колебания битрейта
-        limit = int(self.max_audio_minutes * 60 * (fmt.get("abr") or 128) * 1000 / 8 * 1.2)
-        headers = {**(fmt.get("http_headers") or {}), "Range": f"bytes=0-{limit}"}
-        with ydl.urlopen(Request(fmt["url"], headers=headers)) as response, open(path, "wb") as out:
-            while chunk := response.read(1 << 16):
-                out.write(chunk)
+        limit = int(self.max_audio_minutes * 60 * bytes_per_second * 1.2)
+        if fmt.get("filesize"):
+            limit = min(limit, fmt["filesize"])
+        # YouTube душит скорость запросов больше 10 МиБ, yt-dlp качает его такими же частями
+        step = (fmt.get("downloader_options") or {}).get("http_chunk_size") or CHUNK_BYTES
+        written = 0
+        with open(path, "wb") as out:
+            try:
+                while written < limit:
+                    end = min(written + step, limit) - 1
+                    headers = {**(fmt.get("http_headers") or {}), "Range": f"bytes={written}-{end}"}
+                    with ydl.urlopen(Request(fmt["url"], headers=headers)) as response:
+                        while chunk := response.read(1 << 16):
+                            out.write(chunk)
+                            written += len(chunk)
+                    if written <= end:
+                        break
+            except TransportError as exc:
+                # Нужно только начало ролика: если его уже хватает, обрыв не страшен
+                if written < MIN_AUDIO_SECONDS * bytes_per_second:
+                    raise
+                logger.warning(
+                    "аудио оборвалось на {} МБ, распознаю что есть: {}", written >> 20, exc
+                )
 
     def _whisper(self, ydl, info: dict[str, Any], log: YtdlpLog) -> Transcript | None:
         fd, path = tempfile.mkstemp(suffix=".m4a")
