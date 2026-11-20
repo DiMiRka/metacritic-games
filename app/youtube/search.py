@@ -25,6 +25,12 @@ LETSPLAY_MARKERS = re.compile(
     r"прохождение|летсплей|стрим",
     re.IGNORECASE,
 )
+# Прохождения без голоса: речи в них нет, а Whisper потратил бы на каждое минуты CPU
+NO_COMMENTARY = re.compile(
+    r"no[ -]?(commentary|commentaries|talking|voice|comments?)|without commentary|"
+    r"без (комментариев|комментов|слов|голоса)",
+    re.IGNORECASE,
+)
 # Игры-площадки для пародий и модов: «играю за Hades в Minecraft» — это ролик не про Hades
 OTHER_GAMES = frozenset({"minecraft", "roblox", "fortnite", "gmod", "sims", "terraria"})
 
@@ -81,6 +87,7 @@ def rank_candidates(
         and not c.age_restricted
         and mentions_game(c.title, game_title)
         and not about_other_game(c.title, game_title)
+        and not NO_COMMENTARY.search(c.title)
     ]
     return sorted(suitable, key=lambda c: (not looks_like_letsplay(c.title), -(c.views or 0)))
 

@@ -263,6 +263,17 @@ def test_rank_candidates_letsplays_first_then_by_views() -> None:
     ]
 
 
+def test_rank_candidates_drops_no_commentary() -> None:
+    from app.youtube.search import rank_candidates
+
+    candidates = [
+        video("nc1", "Hades Full Game Walkthrough - No Commentary", 5_000_000, 300),
+        video("nc2", "Hades прохождение без комментариев", 4_000_000, 120),
+        video("lp", "Hades let's play part 1", 900_000, 60),
+    ]
+    assert [c.video_id for c in rank_candidates(candidates, "Hades", 600)] == ["lp"]
+
+
 def test_cookies_copied_to_writable_file(tmp_path) -> None:
     """yt-dlp пишет cookies обратно при закрытии: исходник только для чтения не трогаем"""
     import os

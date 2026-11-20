@@ -163,7 +163,23 @@ class LetsplayTranscribe:
                 await enqueue_conclusion(session, game_id, run_id)
             return LetsplayResult(game_id, changed=False)
 
-        candidate, transcript = await self._first_with_speech(title, candidates)
+        try:
+            candidate, transcript = await self._first_with_speech(title, candidates)
+        except NoSpeechError as exc:
+            # Это ответ, а не сбой: летсплея с речью нет, как и при пустом поиске. Задача не
+            # уходит в dead и не повторяется каждый день, следующий поиск через REFRESH_DAYS.
+            # Прежнее заключение по другому ролику остаётся на странице игры
+            keep = current is not None and current.status == LetsplayStatus.DONE
+            status = LetsplayStatus.DONE if keep else LetsplayStatus.NOT_FOUND
+            values = {
+                "status": status,
+                "error": f"NoSpeechError: {exc}"[:1000],
+                "checked_at": func.now(),
+            }
+            async with self.session_factory() as session, session.begin():
+                await upsert_letsplay(session, game_id, values)
+            logger.info("летсплей {}: {}", title, exc)
+            return LetsplayResult(game_id, changed=current is None or current.status != status)
         values = {
             "video_id": candidate.video_id,
             "video_url": candidate.url,

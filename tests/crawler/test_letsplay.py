@@ -85,20 +85,22 @@ async def test_not_found_recorded(db_engine, session_factory) -> None:
     assert (row.status, row.video_url, row.conclusion) == ("not_found", None, None)
 
 
-async def test_no_speech_marks_failed_and_keeps_game(
-    db_engine, session_factory, monkeypatch
-) -> None:
-    monkeypatch.setattr(settings, "job_max_attempts", 1)
-    await run_pipeline(
-        db_engine, session_factory, FakeClient(new_releases=["elden-ring"], games=GAMES),
-        FakeSummarizer(), letsplays=FakeLetsplays(fail=NoSpeechError("тишина")),
-    )  # fmt: skip
+async def test_no_speech_is_answer_not_failure(db_engine, session_factory, monkeypatch) -> None:
+    """Речи нет ни в одном ролике: летсплея нет, задача не dead и завтра не повторяется"""
+    letsplays = FakeLetsplays(fail=NoSpeechError("тишина"))
+    client = FakeClient(new_releases=["elden-ring"], games=GAMES)
+    await run_pipeline(db_engine, session_factory, client, FakeSummarizer(), letsplays=letsplays)
     row = await letsplay_row(session_factory)
-    assert row.status == "failed"
-    assert "NoSpeechError" in row.error
-    assert ("letsplay", "dead") in await job_statuses(session_factory)
+    assert row.status == "not_found"
+    assert "NoSpeechError" in row.error and row.checked_at is not None
+    assert await job_statuses(session_factory) == {("letsplay", "done")}
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(Game)) == 1
+
+    later = now_tz() + timedelta(days=2)
+    monkeypatch.setattr(stages_module, "now_tz", lambda: later)
+    await run_pipeline(db_engine, session_factory, client, FakeSummarizer(), letsplays=letsplays)
+    assert len(letsplays.searches) == 1
 
 
 async def test_failure_keeps_previous_conclusion(db_engine, session_factory, monkeypatch) -> None:
@@ -217,7 +219,7 @@ async def test_gives_up_after_max_candidates(db_engine, session_factory, monkeyp
         FakeSummarizer(), letsplays=letsplays,
     )  # fmt: skip
     row = await letsplay_row(session_factory)
-    assert row.status == "failed" and "ни в одном из 2 роликов" in row.error
+    assert row.status == "not_found" and "ни в одном из 2 роликов" in row.error
     assert letsplays.transcribed == ["s1", "s2"]
 
 
