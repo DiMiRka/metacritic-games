@@ -321,7 +321,7 @@ services:
       - worker
 
   alertmanager:
-    image: prom/alertmanager:v0.28.1@sha256:27c475db5fb156cab31d5c18a4251ac7ed567746a2483ff264516437a39b15ba
+    image: prom/alertmanager:v0.35.1@sha256:4e3d029e69c7f61dd53a2b31a3dc427a2b81736cffca185c0854075e07969e36
     entrypoint: ["sh", "/etc/alertmanager/entrypoint.sh"]
     # Токен, чат и адрес сторожевого пинга только здесь: ни web, ни worker их не видят
     environment:
