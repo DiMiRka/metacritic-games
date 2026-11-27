@@ -2,7 +2,7 @@
 # Зависимости ставятся строго по uv.lock с проверкой хешей, в образ web не попадают
 # fastembed, LLM-клиенты и прочие библиотеки воркера
 
-FROM ghcr.io/astral-sh/uv:0.12.6@sha256:88bc6eb1ccd4b82efd0e1b530caffabddf50dc2bf612e66c14ea25b8ee8a4d3d AS uv
+FROM ghcr.io/astral-sh/uv:0.13.10@sha256:a3ea1357342c1a4bf9a0c53a3deb1b55379aefa037338d8113d5771efa01774f AS uv
 
 FROM python:3.12.16-slim-trixie@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54 AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
